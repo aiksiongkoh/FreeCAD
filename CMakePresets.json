@@ -40,6 +40,22 @@
           "CMAKE_BUILD_TYPE": {
             "type": "STRING",
             "value": "Debug"
+        },
+        "FREECAD_LIBPACK_DIR": {
+          "type": "PATH",
+          "value": "C:/Users/askoh/Documents/GitHub/FreeCAD/FreeCAD-LibPack/LibPack-26.3.0-v3.5.2-x64-Debug"
+        },
+        "FREECAD_COPY_LIBPACK_BIN_TO_BUILD": {
+          "type": "BOOL",
+          "value": "ON"
+        },
+        "FREECAD_COPY_DEPEND_DIRS_TO_BUILD": {
+          "type": "BOOL",
+          "value": "ON"
+        },
+        "FREECAD_COPY_PLUGINS_BIN_TO_BUILD": {
+          "type": "BOOL",
+          "value": "ON"
           }
         }
       },
