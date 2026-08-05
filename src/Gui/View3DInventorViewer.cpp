@@ -2330,8 +2330,11 @@ void View3DInventorViewer::setCornerGravityIndicator(
     cornerGravityDocumentName = newDocumentName;
     cornerGravityObjectName = newObjectName;
 
-    if (this->isFeedbackVisible() && this->isViewing()) {
+    if (this->isFeedbackVisible()) {
         this->getSoRenderManager()->scheduleRedraw();
+        if (auto* widget = this->getGLWidget()) {
+            widget->update();
+        }
     }
 }
 
