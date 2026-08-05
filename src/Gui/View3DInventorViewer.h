@@ -27,6 +27,7 @@
 #include <map>
 #include <memory>
 #include <set>
+#include <string>
 #include <vector>
 
 #include <QCursor>
@@ -569,6 +570,12 @@ public:
     void setAxisLetterColor(const SbColor& color);
     void setAxisCross(bool on);
     bool hasAxisCross();
+    void setCornerGravityIndicator(
+        bool on,
+        const SbVec3f& gravity,
+        const char* documentName = nullptr,
+        const char* objectName = nullptr
+    );
 
     void showRotationCenter(bool show);
     void changeRotationCenterPosition(const SbVec3f& newCenter);
@@ -647,6 +654,8 @@ private:
     void initialize();
     void syncNaviCubeVisibility();
     void drawAxisCross();
+    bool selectCornerGravityIndicator(const SoEvent* ev);
+    bool isOnCornerGravityIndicator(const SbVec2s& position) const;
     void drawSingleBackground(const QColor&);
     void recoverFromRenderMemoryException();
     void renderDelayedAnnotations(SoGLRenderAction* glra);
@@ -709,6 +718,10 @@ private:
     // small axis cross in the corner
     bool axiscrossEnabled;
     int axiscrossSize;
+    bool cornerGravityIndicatorEnabled {false};
+    SbVec3f cornerGravityVector {0.0f, 0.0f, -1.0f};
+    std::string cornerGravityDocumentName;
+    std::string cornerGravityObjectName;
     // big one in the middle
     SoShapeScale* axisCross;
     SoGroup* axisGroup;
