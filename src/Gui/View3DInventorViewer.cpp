@@ -2320,8 +2320,7 @@ void View3DInventorViewer::setCornerGravityIndicator(
     const std::string newObjectName = objectName ? objectName : "";
 
     if (cornerGravityIndicatorEnabled == on && cornerGravityVector == normalized
-        && cornerGravityDocumentName == newDocumentName
-        && cornerGravityObjectName == newObjectName) {
+        && cornerGravityDocumentName == newDocumentName && cornerGravityObjectName == newObjectName) {
         return;
     }
 
@@ -3748,16 +3747,11 @@ bool View3DInventorViewer::selectCornerGravityIndicator(const SoEvent* ev)
     if (!mouseEvent->wasCtrlDown()) {
         Gui::Selection().clearSelection(cornerGravityDocumentName.c_str());
     }
-    Gui::Selection().addSelection(
-        cornerGravityDocumentName.c_str(),
-        cornerGravityObjectName.c_str()
-    );
+    Gui::Selection().addSelection(cornerGravityDocumentName.c_str(), cornerGravityObjectName.c_str());
 
     auto* appDocument = App::GetApplication().getDocument(cornerGravityDocumentName.c_str());
-    auto* object =
-        appDocument ? appDocument->getObject(cornerGravityObjectName.c_str()) : nullptr;
-    auto* guiDocument =
-        appDocument ? Gui::Application::Instance->getDocument(appDocument) : nullptr;
+    auto* object = appDocument ? appDocument->getObject(cornerGravityObjectName.c_str()) : nullptr;
+    auto* guiDocument = appDocument ? Gui::Application::Instance->getDocument(appDocument) : nullptr;
     auto* viewProvider = object && guiDocument
         ? dynamic_cast<Gui::ViewProviderDocumentObject*>(guiDocument->getViewProvider(object))
         : nullptr;
@@ -3778,8 +3772,7 @@ bool View3DInventorViewer::isOnCornerGravityIndicator(const SbVec2s& position) c
         return false;
     }
 
-    const int effectiveAxisCrossSize =
-        std::max(this->axiscrossSize, defaultCornerCoordinateSystemSize);
+    const int effectiveAxisCrossSize = std::max(this->axiscrossSize, defaultCornerCoordinateSystemSize);
     const int pixelarea = static_cast<int>(
         static_cast<float>(effectiveAxisCrossSize) / 100.0F * std::min(viewWidth, viewHeight)
     );
@@ -3825,8 +3818,7 @@ bool View3DInventorViewer::isOnCornerGravityIndicator(const SbVec2s& position) c
         SbVec3f projected;
         comb.multVecMatrix(point, projected);
         const float size = static_cast<float>(pixelarea);
-        return SbVec2f(left + (1.0F + projected[0]) * size / 2.0F,
-                       (1.0F + projected[1]) * size / 2.0F);
+        return SbVec2f(left + (1.0F + projected[0]) * size / 2.0F, (1.0F + projected[1]) * size / 2.0F);
     };
 
     const float size = static_cast<float>(pixelarea);
@@ -3840,9 +3832,8 @@ bool View3DInventorViewer::isOnCornerGravityIndicator(const SbVec2s& position) c
         const float dy = a[1] - b[1];
         return dx * dx + dy * dy;
     };
-    auto distanceToSegmentSquared = [distanceSquared](const SbVec2f& p,
-                                                      const SbVec2f& a,
-                                                      const SbVec2f& b) {
+    auto distanceToSegmentSquared =
+        [distanceSquared](const SbVec2f& p, const SbVec2f& a, const SbVec2f& b) {
         const SbVec2f ab(b[0] - a[0], b[1] - a[1]);
         const SbVec2f ap(p[0] - a[0], p[1] - a[1]);
         const float len2 = ab[0] * ab[0] + ab[1] * ab[1];
@@ -5448,8 +5439,7 @@ void View3DInventorViewer::drawAxisCross()
         return;
     }
 
-    const int effectiveAxisCrossSize =
-        std::max(this->axiscrossSize, defaultCornerCoordinateSystemSize);
+    const int effectiveAxisCrossSize = std::max(this->axiscrossSize, defaultCornerCoordinateSystemSize);
     const int pixelarea = static_cast<int>(
         static_cast<float>(effectiveAxisCrossSize) / 100.0F * std::min(viewWidth, viewHeight)
     );
@@ -5524,7 +5514,9 @@ void View3DInventorViewer::drawAxisCross()
     overlay.xMaterial->diffuseColor.setValue(m_xColor.r, m_xColor.g, m_xColor.b);
     overlay.yMaterial->diffuseColor.setValue(m_yColor.r, m_yColor.g, m_yColor.b);
     overlay.zMaterial->diffuseColor.setValue(m_zColor.r, m_zColor.g, m_zColor.b);
-    overlay.gravityRotation->rotation.setValue(SbRotation(SbVec3f(1.0f, 0.0f, 0.0f), cornerGravityVector));
+    overlay.gravityRotation->rotation.setValue(
+        SbRotation(SbVec3f(1.0f, 0.0f, 0.0f), cornerGravityVector)
+    );
 
     std::vector<std::pair<float, SoNode*>> axes = {
         std::pair<float, SoNode*> {xTipProjected[2], overlay.xAxis},
@@ -5596,11 +5588,8 @@ void View3DInventorViewer::drawAxisCross()
     placeLetter(overlay.zLetter, zLetterProjected);
 
     const SbVec2f gravityLabel = toMiniViewportPixel(gravityLetterProjected);
-    overlay.gravityLetterPosition->translation.setValue(
-        gravityLabel[0] - miniViewportCenter,
-        gravityLabel[1] - miniViewportCenter,
-        0.0f
-    );
+    overlay.gravityLetterPosition->translation
+        .setValue(gravityLabel[0] - miniViewportCenter, gravityLabel[1] - miniViewportCenter, 0.0f);
 
     overlay.xLetter.texture->image.setValue(SbVec2s(XPM_WIDTH, XPM_HEIGHT), 4, XPM_pixel_data);
     overlay.yLetter.texture->image.setValue(SbVec2s(YPM_WIDTH, YPM_HEIGHT), 4, YPM_pixel_data);
