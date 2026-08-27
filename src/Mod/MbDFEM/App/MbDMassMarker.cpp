@@ -6,9 +6,11 @@
 #include <Base/Exception.h>
 #include <Base/Quantity.h>
 #include <Mod/Material/App/MaterialManager.h>
+#include <QString>
 #include <QVariant>
 
 #include <exception>
+#include <memory>
 
 #include "MbDPart.h"
 
@@ -16,6 +18,19 @@ PROPERTY_SOURCE(MbDFEM::MbDMassMarker, MbDFEM::MbDMarker)
 
 namespace
 {
+
+constexpr auto CalculixSteelUuid = "92589471-a6cb-4bbc-b748-d425a17dea7d";
+
+std::shared_ptr<Materials::Material> defaultMassMarkerMaterial()
+{
+    auto material = Materials::MaterialManager::getManager().getMaterial(
+        QString::fromLatin1(CalculixSteelUuid));
+    if (material) {
+        return material;
+    }
+
+    return Materials::MaterialManager::defaultMaterial();
+}
 
 double materialDensity(const Materials::Material& material, const char* unit, double fallback)
 {
@@ -73,7 +88,7 @@ MbDFEM::MbDMassMarker::MbDMassMarker()
                       "MbDFEM",
                       App::Prop_None,
                       "True when this mass marker was populated from its part's shape mass properties");
-    auto mat = Materials::MaterialManager::defaultMaterial();
+    auto mat = defaultMassMarkerMaterial();
     ADD_PROPERTY_TYPE(material, (*mat), "MbDFEM", App::Prop_None, "Material of this part");
 }
 

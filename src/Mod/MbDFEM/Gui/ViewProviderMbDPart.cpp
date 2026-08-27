@@ -158,6 +158,7 @@ void ViewProviderMbDPart::setupContextMenu(QMenu* menu, QObject* receiver, const
     if (auto* otherMenu = addOtherContextMenu(menu)) {
         PartGui::ViewProviderPart::setupContextMenu(otherMenu, receiver, member);
     }
+    finalizeMbDFEMContextMenu(menu);
 }
 
 void ViewProviderMbDPart::onChanged(const App::Property* prop)

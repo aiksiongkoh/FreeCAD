@@ -10,6 +10,7 @@ set(MbDFEM_Scripts
     FreeCADMbDAnimationPanel.py
     FreeCADMbDBackend.py
     FreeCADMbDExporter.py
+    FreeCADMbDFEMEmbedded.py
     FreeCADMbDMassMarkerPanel.py
     FreeCADMbDResults.py
     FreeCADMbDSimulationPanel.py
@@ -21,12 +22,22 @@ set(MbDFEM_Examples
     Examples/CreateMbDFEMModel.py
 )
 
+set(MbDFEM_Ui
+    Resources/ui/Material.ui
+)
+
 if(BUILD_GUI)
     list(APPEND MbDFEM_Scripts InitGui.py TestMbDFEMGui.py)
 endif()
 
 add_custom_target(MbDFEMScripts ALL
     SOURCES ${MbDFEM_Scripts} ${MbDFEM_Examples}
+)
+
+add_custom_command(
+    TARGET MbDFEMScripts
+    PRE_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/Mod/MbDFEM/Resources/ui"
 )
 
 fc_target_copy_resource_flat(MbDFEMScripts
@@ -39,6 +50,12 @@ fc_target_copy_resource(MbDFEMScripts
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_BINARY_DIR}/Mod/MbDFEM
     ${MbDFEM_Examples}
+)
+
+fc_target_copy_resource(MbDFEMScripts
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_BINARY_DIR}/Mod/MbDFEM
+    ${MbDFEM_Ui}
 )
 
 add_custom_command(
@@ -56,4 +73,9 @@ install(
 install(
     FILES ${MbDFEM_Examples}
     DESTINATION Mod/MbDFEM/Examples
+)
+
+install(
+    FILES ${MbDFEM_Ui}
+    DESTINATION Mod/MbDFEM/Resources/ui
 )

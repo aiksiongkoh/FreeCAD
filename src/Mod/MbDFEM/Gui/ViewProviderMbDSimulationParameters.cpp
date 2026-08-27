@@ -49,4 +49,5 @@ void ViewProviderMbDSimulationParameters::setupContextMenu(QMenu* menu,
     if (auto* otherMenu = addOtherContextMenu(menu)) {
         Gui::ViewProviderDocumentObject::setupContextMenu(otherMenu, receiver, member);
     }
+    finalizeMbDFEMContextMenu(menu);
 }

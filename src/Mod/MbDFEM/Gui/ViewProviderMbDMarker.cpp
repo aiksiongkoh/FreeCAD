@@ -88,6 +88,7 @@ void ViewProviderMbDMarker::setupContextMenu(QMenu* menu, QObject* receiver, con
     if (auto* otherMenu = addOtherContextMenu(menu)) {
         PartGui::ViewProviderPart::setupContextMenu(otherMenu, receiver, member);
     }
+    finalizeMbDFEMContextMenu(menu);
 }
 
 void ViewProviderMbDMarker::onChanged(const App::Property* prop)

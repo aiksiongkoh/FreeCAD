@@ -15,6 +15,16 @@ set(MbDFEM_SRCS
     AppMbDFEM.cpp
     AsmtIO.cpp
     AsmtIO.h
+    FEMAction.cpp
+    FEMAction.h
+    FEMAssembly.cpp
+    FEMAssembly.h
+    FEMItem.cpp
+    FEMItem.h
+    FEMJoint.cpp
+    FEMJoint.h
+    FEMPart.cpp
+    FEMPart.h
     MbDAction.cpp
     MbDAction.h
     MbDAssembly.cpp

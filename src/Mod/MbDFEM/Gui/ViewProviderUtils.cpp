@@ -6,10 +6,7 @@
 #include <string>
 
 #include <QAction>
-#include <QApplication>
-#include <QEvent>
 #include <QMenu>
-#include <QObject>
 
 #include <Inventor/SoFullPath.h>
 #include <Inventor/misc/SoChildList.h>
@@ -27,8 +24,6 @@
 namespace
 {
 
-constexpr const char* mbdfemOtherMenuProperty = "MbDFEMOtherMenu";
-
 bool addCommandToMenu(QMenu* menu, const char* commandName)
 {
     auto* command = commandName
@@ -41,78 +36,6 @@ bool addCommandToMenu(QMenu* menu, const char* commandName)
     command->addTo(menu);
     command->testActive();
     return true;
-}
-
-bool isMbDFEMOtherMenuAction(QAction* action)
-{
-    return action && action->property(mbdfemOtherMenuProperty).toBool();
-}
-
-void moveTrailingActionsToOther(QMenu* menu, QMenu* otherMenu)
-{
-    if (!menu || !otherMenu) {
-        return;
-    }
-
-    const auto actions = menu->actions();
-    auto* otherAction = otherMenu->menuAction();
-    bool collect = false;
-    for (auto* action : actions) {
-        if (action == otherAction) {
-            collect = true;
-            continue;
-        }
-        if (!collect || isMbDFEMOtherMenuAction(action)) {
-            continue;
-        }
-
-        auto* submenu = action->menu();
-        if (submenu && submenu == otherMenu) {
-            continue;
-        }
-
-        menu->removeAction(action);
-        otherMenu->addAction(action);
-    }
-}
-
-void finalizeMbDFEMOtherMenu(QMenu* menu)
-{
-    if (!menu) {
-        return;
-    }
-
-    for (auto* action : menu->actions()) {
-        if (isMbDFEMOtherMenuAction(action)) {
-            moveTrailingActionsToOther(menu, action->menu());
-            return;
-        }
-    }
-}
-
-class MbDFEMContextMenuFilter: public QObject
-{
-public:
-    using QObject::QObject;
-
-protected:
-    bool eventFilter(QObject* watched, QEvent* event) override
-    {
-        if (event && event->type() == QEvent::Show) {
-            finalizeMbDFEMOtherMenu(qobject_cast<QMenu*>(watched));
-        }
-        return QObject::eventFilter(watched, event);
-    }
-};
-
-void ensureContextMenuFilterInstalled()
-{
-    static auto* filter = new MbDFEMContextMenuFilter(qApp);
-    static bool installed = false;
-    if (!installed && qApp) {
-        qApp->installEventFilter(filter);
-        installed = true;
-    }
 }
 
 }  // namespace
@@ -129,7 +52,9 @@ void MbDFEMGui::setOriginInTreeVisible(App::DocumentObject* object, bool visible
     auto* guiDocument = document ? Gui::Application::Instance->getDocument(document) : nullptr;
     auto* viewProvider = guiDocument && origin ? guiDocument->getViewProvider(origin) : nullptr;
     if (auto* documentViewProvider = freecad_cast<Gui::ViewProviderDocumentObject*>(viewProvider)) {
-        documentViewProvider->ShowInTree.setValue(visible);
+        if (documentViewProvider->ShowInTree.getValue() != visible) {
+            documentViewProvider->ShowInTree.setValue(visible);
+        }
     }
 }
 
@@ -165,19 +90,16 @@ QMenu* MbDFEMGui::addOtherContextMenu(QMenu* menu)
         return nullptr;
     }
 
-    addCommandToMenu(menu, "Std_TransformManip");
-    addCommandToMenu(menu, "Std_Delete");
-
     auto* otherMenu = menu->addMenu(QObject::tr("Other"));
-    auto* otherAction = otherMenu->menuAction();
-    otherAction->setProperty(mbdfemOtherMenuProperty, true);
-
-    ensureContextMenuFilterInstalled();
-    QObject::connect(menu, &QMenu::aboutToShow, otherMenu, [menu, otherMenu]() {
-        moveTrailingActionsToOther(menu, otherMenu);
-    });
+    addCommandToMenu(otherMenu, "Std_TransformManip");
+    addCommandToMenu(otherMenu, "Std_Delete");
 
     return otherMenu;
+}
+
+void MbDFEMGui::finalizeMbDFEMContextMenu(QMenu* menu)
+{
+    Q_UNUSED(menu)
 }
 
 bool MbDFEMGui::delegateSubobjectDetailPath(const Gui::ViewProviderDocumentObject* parent,

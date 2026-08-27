@@ -386,6 +386,8 @@ class MbDFEMAssemblyTest(unittest.TestCase):
                 self.assertEqual(mass_marker.TypeId, "MbDFEM::MbDMassMarker")
                 self.assertTrue(mass_marker.isDerivedFrom("MbDFEM::MbDMarker"))
                 self.assertIn("material", mass_marker.PropertiesList)
+                self.assertEqual(mass_marker.material.UUID, "92589471-a6cb-4bbc-b748-d425a17dea7d")
+                self.assertEqual(mass_marker.material.Name, "CalculiX-Steel")
                 self.assertIs(part.getMassMarker(), mass_marker)
                 self.assertIs(part.massMarker, mass_marker)
                 self.assertEqual(part.markers, [])
@@ -697,6 +699,38 @@ class MbDFEMAssemblyTest(unittest.TestCase):
             self.assertIs(assembly.getSubObject(gravity_path, retType=1), gravity)
             self.assertIs(assembly.getSubObject(simulation_path, retType=1), simulation_parameters)
             self.assertIs(assembly.getSubObject(animation_path, retType=1), animation_parameters)
+        finally:
+            App.closeDocument(document.Name)
+
+    def test_fem_tree_folder_subobject_paths_resolve_to_contained_objects(self):
+        document = App.newDocument("MbDFEMFEMFolderSubobjectPathTest")
+
+        try:
+            assembly = document.addObject("MbDFEM::FEMAssembly", "FEMAssembly")
+            part = document.addObject("MbDFEM::FEMPart", "FEMPart")
+            joint = document.addObject("MbDFEM::FEMJoint", "FEMJoint")
+            motion = document.addObject("MbDFEM::FEMJoint", "FEMMotion")
+            action = document.addObject("MbDFEM::FEMAction", "FEMAction")
+
+            assembly.ensureCategoryFolders()
+            assembly.getPartsFolder().addObject(part)
+            assembly.getJointsFolder().addObject(joint)
+            assembly.getMotionsFolder().addObject(motion)
+            assembly.getActionsFolder().addObject(action)
+
+            part_path = f"{assembly.getPartsFolder().Name}.{part.Name}."
+            joint_path = f"{assembly.getJointsFolder().Name}.{joint.Name}."
+            motion_path = f"{assembly.getMotionsFolder().Name}.{motion.Name}."
+            action_path = f"{assembly.getActionsFolder().Name}.{action.Name}."
+
+            self.assertIs(assembly.getSubObject(part_path, retType=1), part)
+            self.assertIs(assembly.getSubObject(f"{part.Name}.", retType=1), part)
+            self.assertIs(assembly.getSubObject(joint_path, retType=1), joint)
+            self.assertIs(assembly.getSubObject(f"{joint.Name}.", retType=1), joint)
+            self.assertIs(assembly.getSubObject(motion_path, retType=1), motion)
+            self.assertIs(assembly.getSubObject(f"{motion.Name}.", retType=1), motion)
+            self.assertIs(assembly.getSubObject(action_path, retType=1), action)
+            self.assertIs(assembly.getSubObject(f"{action.Name}.", retType=1), action)
         finally:
             App.closeDocument(document.Name)
 

@@ -150,4 +150,92 @@ public:
     }
 };
 
+class MbDFEMExport FEMPartsFolder: public App::DocumentObjectGroup
+{
+    PROPERTY_HEADER_WITH_OVERRIDE(MbDFEM::FEMPartsFolder);
+
+public:
+    FEMPartsFolder() = default;
+    ~FEMPartsFolder() override = default;
+
+    bool allowObject(App::DocumentObject* object) override;
+    std::vector<App::DocumentObject*> addObject(App::DocumentObject* object) override;
+    std::vector<App::DocumentObject*> removeObject(App::DocumentObject* object) override;
+    bool redirectSubName(std::ostringstream& ss,
+                         App::DocumentObject* topParent,
+                         App::DocumentObject* child) const override;
+    void onChanged(const App::Property* prop) override;
+
+    bool allowDuplicateLabel() const override
+    {
+        return true;
+    }
+};
+
+class MbDFEMExport FEMJointsFolder: public App::DocumentObjectGroup
+{
+    PROPERTY_HEADER_WITH_OVERRIDE(MbDFEM::FEMJointsFolder);
+
+public:
+    FEMJointsFolder() = default;
+    ~FEMJointsFolder() override = default;
+
+    bool allowObject(App::DocumentObject* object) override;
+    std::vector<App::DocumentObject*> addObject(App::DocumentObject* object) override;
+    std::vector<App::DocumentObject*> removeObject(App::DocumentObject* object) override;
+    bool redirectSubName(std::ostringstream& ss,
+                         App::DocumentObject* topParent,
+                         App::DocumentObject* child) const override;
+    void onChanged(const App::Property* prop) override;
+
+    bool allowDuplicateLabel() const override
+    {
+        return true;
+    }
+};
+
+class MbDFEMExport FEMMotionsFolder: public App::DocumentObjectGroup
+{
+    PROPERTY_HEADER_WITH_OVERRIDE(MbDFEM::FEMMotionsFolder);
+
+public:
+    FEMMotionsFolder() = default;
+    ~FEMMotionsFolder() override = default;
+
+    bool allowObject(App::DocumentObject* object) override;
+    std::vector<App::DocumentObject*> addObject(App::DocumentObject* object) override;
+    std::vector<App::DocumentObject*> removeObject(App::DocumentObject* object) override;
+    bool redirectSubName(std::ostringstream& ss,
+                         App::DocumentObject* topParent,
+                         App::DocumentObject* child) const override;
+    void onChanged(const App::Property* prop) override;
+
+    bool allowDuplicateLabel() const override
+    {
+        return true;
+    }
+};
+
+class MbDFEMExport FEMActionsFolder: public App::DocumentObjectGroup
+{
+    PROPERTY_HEADER_WITH_OVERRIDE(MbDFEM::FEMActionsFolder);
+
+public:
+    FEMActionsFolder() = default;
+    ~FEMActionsFolder() override = default;
+
+    bool allowObject(App::DocumentObject* object) override;
+    std::vector<App::DocumentObject*> addObject(App::DocumentObject* object) override;
+    std::vector<App::DocumentObject*> removeObject(App::DocumentObject* object) override;
+    bool redirectSubName(std::ostringstream& ss,
+                         App::DocumentObject* topParent,
+                         App::DocumentObject* child) const override;
+    void onChanged(const App::Property* prop) override;
+
+    bool allowDuplicateLabel() const override
+    {
+        return true;
+    }
+};
+
 }  // namespace MbDFEM
