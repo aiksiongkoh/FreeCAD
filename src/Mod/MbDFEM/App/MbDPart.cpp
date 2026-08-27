@@ -237,7 +237,7 @@ MbDFEM::MbDPart::MbDPart()
 
 const App::PropertyComplexGeoData* MbDFEM::MbDPart::getPropertyOfGeometry() const
 {
-    return nullptr;
+    return &Shape;
 }
 
 void MbDFEM::MbDPart::addMarker(MbDMarker* marker)

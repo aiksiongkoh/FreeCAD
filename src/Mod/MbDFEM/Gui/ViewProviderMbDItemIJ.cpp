@@ -24,6 +24,7 @@ void ViewProviderMbDItemIJ::setupContextMenu(QMenu* menu, QObject* receiver, con
     if (auto* otherMenu = addOtherContextMenu(menu)) {
         Gui::ViewProviderDocumentObject::setupContextMenu(otherMenu, receiver, member);
     }
+    finalizeMbDFEMContextMenu(menu);
 }
 
 std::vector<App::DocumentObject*> ViewProviderMbDItemIJ::claimChildren() const

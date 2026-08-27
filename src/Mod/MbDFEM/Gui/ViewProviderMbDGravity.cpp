@@ -159,6 +159,7 @@ void ViewProviderMbDGravity::setupContextMenu(QMenu* menu, QObject* receiver, co
     if (auto* otherMenu = addOtherContextMenu(menu)) {
         Gui::ViewProviderDocumentObject::setupContextMenu(otherMenu, receiver, member);
     }
+    finalizeMbDFEMContextMenu(menu);
 }
 
 void ViewProviderMbDGravity::updateData(const App::Property* prop)

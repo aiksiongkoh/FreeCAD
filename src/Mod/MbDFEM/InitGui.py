@@ -1,18 +1,27 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
+# pylint: skip-file
+# This workbench init module registers dynamic FreeCAD GUI commands and imports
+# C++ extension modules for side effects; validate it with FreeCAD's Python.
 
 import FreeCADGui as Gui
 
 import FreeCAD
-import MatGui  # noqa: F401
-import PartGui  # noqa: F401
-import MbDFEMGui  # noqa: F401
+import MatGui
+import PartGui
+import MbDFEMGui
+import FreeCADMbDFEMEmbedded
 import FreeCADMbDAnimationPanel
 import FreeCADMbDSimulationPanel
 
 FreeCAD.__unit_test__ += ["TestMbDFEMGui"]
 
+_animation_parameters_selection_observer = None
+_simulation_parameters_selection_observer = None
+_embedded_fem_part_view_provider_observer = None
+
 try:
-    Gui.Selection.removeObserver(_animation_parameters_selection_observer)
+    if _animation_parameters_selection_observer is not None:
+        Gui.Selection.removeObserver(_animation_parameters_selection_observer)
 except Exception:
     pass
 _animation_parameters_selection_observer = (
@@ -21,13 +30,15 @@ _animation_parameters_selection_observer = (
 Gui.Selection.addObserver(_animation_parameters_selection_observer)
 
 try:
-    Gui.Selection.removeObserver(_simulation_parameters_selection_observer)
+    if _simulation_parameters_selection_observer is not None:
+        Gui.Selection.removeObserver(_simulation_parameters_selection_observer)
 except Exception:
     pass
 _simulation_parameters_selection_observer = (
     FreeCADMbDSimulationPanel.SimulationParametersSelectionObserver()
 )
 Gui.Selection.addObserver(_simulation_parameters_selection_observer)
+
 
 def _normalize(vector):
     import FreeCAD as App
@@ -156,6 +167,1080 @@ class CreateMbDAssemblyCommand:
 
 
 Gui.addCommand("MbDFEM_CreateMbDAssembly", CreateMbDAssemblyCommand())
+
+
+class EmbeddedFEMPartSolverViewProvider:
+    """View provider for FEMPart-owned solver objects that are not in a FEM Analysis."""
+
+    def __init__(self, view_object):
+        view_object.Proxy = self
+        self.Object = view_object.Object
+
+    def attach(self, view_object):
+        self.Object = view_object.Object
+
+    def getIcon(self):
+        return ":/icons/FEM_SolverStandard.svg"
+
+    def setEdit(self, view_object, mode=0):
+        import FreeCADMbDFEMEmbedded
+
+        return FreeCADMbDFEMEmbedded.FEMPartSolverViewProvider(view_object).setEdit(
+            view_object, mode
+        )
+
+    def unsetEdit(self, view_object, mode=0):
+        return True
+
+    def doubleClicked(self, view_object):
+        self.setEdit(view_object)
+        return True
+
+    def dumps(self):
+        return None
+
+    def loads(self, state):
+        return None
+
+
+class EmbeddedFEMPartMaterialTaskPanel:
+    """Material editor for FEMPart materials whose geometry is implied by the FEMPart."""
+
+    def __init__(self, obj):
+        from PySide import QtCore
+
+        import FreeCAD as App
+        import FreeCADGui as Gui
+        import MatGui
+        import Materials
+        from FreeCAD import Units
+
+        self.obj = obj
+        self._selectionWidget = None
+        self.material = self.obj.Material
+        self.uuid = self.obj.UUID
+        self.material_manager = Materials.MaterialManager()
+        self.units = Units
+
+        self.parameterWidget = Gui.PySideUic.loadUi(
+            App.getHomePath() + "Mod/MbDFEM/Resources/ui/Material.ui"
+        )
+        self.material_tree = MatGui.MaterialTreeWidget(self.parameterWidget.wgt_material_tree)
+        self.material_tree.expanded = False
+        self.material_tree.IncludeEmptyFolders = False
+        self.material_tree.IncludeEmptyLibraries = False
+
+        QtCore.QObject.connect(
+            self.parameterWidget.chbu_allow_edit,
+            QtCore.SIGNAL("clicked()"),
+            self.toggleInputFieldsReadOnly,
+        )
+        QtCore.QObject.connect(
+            self.parameterWidget.qsb_density,
+            QtCore.SIGNAL("editingFinished()"),
+            self.density_changed,
+        )
+        QtCore.QObject.connect(
+            self.parameterWidget.qsb_young_modulus,
+            QtCore.SIGNAL("editingFinished()"),
+            self.ym_changed,
+        )
+        QtCore.QObject.connect(
+            self.parameterWidget.qsb_poisson_ratio,
+            QtCore.SIGNAL("editingFinished()"),
+            self.pr_changed,
+        )
+        QtCore.QObject.connect(
+            self.parameterWidget.qsb_thermal_conductivity,
+            QtCore.SIGNAL("editingFinished()"),
+            self.tc_changed,
+        )
+        QtCore.QObject.connect(
+            self.parameterWidget.qsb_expansion_coefficient,
+            QtCore.SIGNAL("editingFinished()"),
+            self.tec_changed,
+        )
+        QtCore.QObject.connect(
+            self.parameterWidget.qsb_expansion_reference_temperature,
+            QtCore.SIGNAL("editingFinished()"),
+            self.tert_changed,
+        )
+        QtCore.QObject.connect(
+            self.parameterWidget.qsb_specific_heat,
+            QtCore.SIGNAL("editingFinished()"),
+            self.sh_changed,
+        )
+        QtCore.QObject.connect(
+            self.parameterWidget.qsb_kinematic_viscosity,
+            QtCore.SIGNAL("editingFinished()"),
+            self.kinematic_viscosity_changed,
+        )
+        QtCore.QObject.connect(
+            self.parameterWidget.wgt_material_tree,
+            QtCore.SIGNAL("onMaterial(QString)"),
+            self.set_from_editor,
+        )
+
+        self.parameterWidget.chbu_allow_edit.setCheckState(QtCore.Qt.CheckState.Unchecked)
+        self.toggleInputFieldsReadOnly()
+
+        if self.obj.Category == "Fluid":
+            self.filter_models(self.obj.Category)
+            self.parameterWidget.groupBox_mechanical.setVisible(0)
+        else:
+            self.parameterWidget.groupBox_fluidic.setVisible(0)
+
+        self.form = [self.parameterWidget]
+        self.material_tree.UUID = self.uuid
+        self.set_mat_params_in_input_fields(self.material)
+
+    def accept(self):
+        self.obj.Material = self.material
+        self.obj.UUID = self.uuid
+        self.obj.References = []
+        gui_doc = self.obj.ViewObject.Document
+        gui_doc.Document.recompute()
+        gui_doc.resetEdit()
+        gui_doc.Document.commitTransaction()
+        return True
+
+    def reject(self):
+        gui_doc = self.obj.ViewObject.Document
+        gui_doc.Document.abortTransaction()
+        gui_doc.resetEdit()
+        gui_doc.Document.recompute()
+        return True
+
+    def activate(self):
+        return None
+
+    def deactivate(self):
+        return None
+
+    def filter_models(self, category):
+        import Materials
+
+        if category == "Fluid":
+            material_filter = Materials.MaterialFilter()
+            uuids = Materials.UUIDs()
+            material_filter.RequiredModels = [uuids.Fluid]
+            self.material_tree.setFilter(material_filter)
+
+    def toggleInputFieldsReadOnly(self):
+        if self.parameterWidget.chbu_allow_edit.isChecked():
+            self.parameterWidget.qsb_density.setDisabled(False)
+            self.parameterWidget.qsb_young_modulus.setDisabled(False)
+            self.parameterWidget.qsb_poisson_ratio.setDisabled(False)
+            self.parameterWidget.qsb_thermal_conductivity.setDisabled(False)
+            self.parameterWidget.qsb_expansion_coefficient.setDisabled(False)
+            self.parameterWidget.qsb_expansion_reference_temperature.setDisabled(False)
+            self.parameterWidget.qsb_specific_heat.setDisabled(False)
+            self.parameterWidget.qsb_kinematic_viscosity.setDisabled(False)
+            self.parameterWidget.wgt_material_tree.setEnabled(False)
+            self.uuid = ""
+            self.mat_from_input_fields()
+        else:
+            self.parameterWidget.qsb_density.setDisabled(True)
+            self.parameterWidget.qsb_young_modulus.setDisabled(True)
+            self.parameterWidget.qsb_poisson_ratio.setDisabled(True)
+            self.parameterWidget.qsb_thermal_conductivity.setDisabled(True)
+            self.parameterWidget.qsb_expansion_coefficient.setDisabled(True)
+            self.parameterWidget.qsb_expansion_reference_temperature.setDisabled(True)
+            self.parameterWidget.qsb_specific_heat.setDisabled(True)
+            self.parameterWidget.qsb_kinematic_viscosity.setDisabled(True)
+            self.parameterWidget.wgt_material_tree.setEnabled(True)
+            self.set_from_editor(self.material_tree.UUID)
+
+    def ym_changed(self):
+        if self.parameterWidget.chbu_allow_edit.isChecked():
+            self.material["YoungsModulus"] = self.parameterWidget.qsb_young_modulus.property(
+                "value"
+            ).UserString
+
+    def density_changed(self):
+        if self.parameterWidget.chbu_allow_edit.isChecked():
+            self.material["Density"] = self.parameterWidget.qsb_density.property("value").UserString
+
+    def pr_changed(self):
+        if self.parameterWidget.chbu_allow_edit.isChecked():
+            self.material["PoissonRatio"] = str(
+                self.parameterWidget.qsb_poisson_ratio.property("value").Value
+            )
+
+    def tc_changed(self):
+        if self.parameterWidget.chbu_allow_edit.isChecked():
+            self.material["ThermalConductivity"] = (
+                self.parameterWidget.qsb_thermal_conductivity.property("value").UserString
+            )
+
+    def tec_changed(self):
+        if self.parameterWidget.chbu_allow_edit.isChecked():
+            self.material["ThermalExpansionCoefficient"] = (
+                self.parameterWidget.qsb_expansion_coefficient.property("value").UserString
+            )
+
+    def tert_changed(self):
+        if self.parameterWidget.chbu_allow_edit.isChecked():
+            self.material["ThermalExpansionReferenceTemperature"] = (
+                self.parameterWidget.qsb_expansion_reference_temperature.property(
+                    "value"
+                ).UserString
+            )
+
+    def sh_changed(self):
+        if self.parameterWidget.chbu_allow_edit.isChecked():
+            self.material["SpecificHeat"] = self.parameterWidget.qsb_specific_heat.property(
+                "value"
+            ).UserString
+
+    def kinematic_viscosity_changed(self):
+        if self.parameterWidget.chbu_allow_edit.isChecked():
+            self.material["KinematicViscosity"] = (
+                self.parameterWidget.qsb_kinematic_viscosity.property("value").UserString
+            )
+
+    def set_mat_params_in_input_fields(self, matmap):
+        if "YoungsModulus" in matmap:
+            self.parameterWidget.qsb_young_modulus.setProperty(
+                "value", self.units.Quantity(matmap["YoungsModulus"])
+            )
+        else:
+            self.parameterWidget.qsb_young_modulus.setProperty("rawValue", 0.0)
+
+        if "PoissonRatio" in matmap:
+            self.parameterWidget.qsb_poisson_ratio.setProperty(
+                "value", self.units.Quantity(matmap["PoissonRatio"])
+            )
+        else:
+            self.parameterWidget.qsb_poisson_ratio.setProperty("rawValue", 0.0)
+
+        if "KinematicViscosity" in matmap:
+            self.parameterWidget.qsb_kinematic_viscosity.setProperty(
+                "value", self.units.Quantity(matmap["KinematicViscosity"])
+            )
+        else:
+            self.parameterWidget.qsb_kinematic_viscosity.setProperty("rawValue", 0.0)
+
+        if "Density" in matmap:
+            self.parameterWidget.qsb_density.setProperty(
+                "value", self.units.Quantity(matmap["Density"])
+            )
+        else:
+            self.parameterWidget.qsb_density.setProperty("rawValue", 0.0)
+
+        if "ThermalConductivity" in matmap:
+            self.parameterWidget.qsb_thermal_conductivity.setProperty(
+                "value", self.units.Quantity(matmap["ThermalConductivity"])
+            )
+        else:
+            self.parameterWidget.qsb_thermal_conductivity.setProperty("rawValue", 0.0)
+
+        if "ThermalExpansionCoefficient" in matmap:
+            value = self.units.Quantity(matmap["ThermalExpansionCoefficient"])
+            value.Format = {"Precision": 3}
+            self.parameterWidget.qsb_expansion_coefficient.setProperty("value", value)
+        else:
+            self.parameterWidget.qsb_expansion_coefficient.setProperty("rawValue", 0.0)
+
+        if "ThermalExpansionReferenceTemperature" in matmap:
+            self.parameterWidget.qsb_expansion_reference_temperature.setProperty(
+                "value", self.units.Quantity(matmap["ThermalExpansionReferenceTemperature"])
+            )
+        else:
+            self.parameterWidget.qsb_expansion_reference_temperature.setProperty("rawValue", 0.0)
+
+        if "SpecificHeat" in matmap:
+            self.parameterWidget.qsb_specific_heat.setProperty(
+                "value", self.units.Quantity(matmap["SpecificHeat"])
+            )
+        else:
+            self.parameterWidget.qsb_specific_heat.setProperty("rawValue", 0.0)
+
+    def set_from_editor(self, value):
+        if not value:
+            return
+        mat = self.material_manager.getMaterial(value)
+        self.material = mat.Properties
+        self.uuid = mat.UUID
+        self.set_mat_params_in_input_fields(self.material)
+
+    def mat_from_input_fields(self):
+        params = self.parameterWidget
+        material = {
+            "Name": "Custom",
+            "Density": params.qsb_density.property("value").UserString,
+            "ThermalConductivity": params.qsb_thermal_conductivity.property(
+                "value"
+            ).UserString,
+            "ThermalExpansionCoefficient": params.qsb_expansion_coefficient.property(
+                "value"
+            ).UserString,
+            "ThermalExpansionReferenceTemperature": (
+                params.qsb_expansion_reference_temperature.property("value").UserString
+            ),
+            "SpecificHeat": params.qsb_specific_heat.property("value").UserString,
+        }
+        if self.obj.Category == "Solid":
+            material["YoungsModulus"] = params.qsb_young_modulus.property("value").UserString
+            material["PoissonRatio"] = str(params.qsb_poisson_ratio.property("value").Value)
+        elif self.obj.Category == "Fluid":
+            material["KinematicViscosity"] = params.qsb_kinematic_viscosity.property(
+                "value"
+            ).UserString
+        self.material = material
+
+
+class EmbeddedFEMPartMaterialViewProvider:
+    """View provider for FEMPart-owned material objects."""
+
+    def __init__(self, view_object):
+        view_object.Proxy = self
+        self.attach(view_object)
+
+    def attach(self, view_object):
+        self.Object = view_object.Object
+        self.ViewObject = view_object
+
+    def getIcon(self):
+        if getattr(self.Object, "Category", "") == "Fluid":
+            return ":/icons/FEM_MaterialFluid.svg"
+        return ":/icons/FEM_MaterialSolid.svg"
+
+    def setEdit(self, view_object, mode=0):
+        import FreeCADGui as Gui
+
+        task = EmbeddedFEMPartMaterialTaskPanel(view_object.Object)
+        Gui.Control.showDialog(task)
+        return True
+
+    def unsetEdit(self, view_object, mode=0):
+        import FreeCADGui as Gui
+
+        Gui.Control.closeDialog()
+        return True
+
+    def doubleClicked(self, view_object):
+        import FreeCADGui as Gui
+
+        if Gui.Control.activeDialog() is not None:
+            Gui.Control.closeDialog()
+        self.setEdit(view_object)
+        return True
+
+    def claimChildren(self):
+        nonlin = getattr(self.Object, "Nonlinear", None)
+        return [nonlin] if nonlin else []
+
+    def dumps(self):
+        return None
+
+    def loads(self, state):
+        return None
+
+
+class EmbeddedFEMPartMeshViewProvider:
+    """View provider for FEMPart-owned Gmsh meshes."""
+
+    def __init__(self, view_object):
+        from femviewprovider import view_mesh_gmsh
+
+        view_mesh_gmsh.VPMeshGmsh(view_object)
+        self.attach(view_object)
+
+    def attach(self, view_object):
+        self.ViewObject = view_object
+        self.Object = view_object.Object
+        view_object.Proxy = self
+
+    def __getattr__(self, name):
+        from femviewprovider import view_mesh_gmsh
+
+        delegate = view_mesh_gmsh.VPMeshGmsh(self.ViewObject)
+        delegate.attach(self.ViewObject)
+        self.ViewObject.Proxy = self
+        return getattr(delegate, name)
+
+    def getIcon(self):
+        return ":/icons/FEM_MeshGmshFromShape.svg"
+
+    def claimChildren(self):
+        shape_child = []
+        if getattr(self.Object, "Shape", None) is not None:
+            shape_child = [self.Object.Shape]
+        return shape_child + self.Object.MeshRefinementList + self.Object.MeshGroupList
+
+    def dumps(self):
+        return None
+
+    def loads(self, state):
+        return None
+
+
+def _install_embedded_fem_part_material_view_provider(view_object):
+    if view_object is None:
+        return False
+    FreeCADMbDFEMEmbedded.install_material_view_provider(view_object)
+    return True
+
+
+def _install_embedded_fem_part_solver_view_provider(view_object):
+    if view_object is None:
+        return False
+    FreeCADMbDFEMEmbedded.install_solver_view_provider(view_object)
+    return True
+
+
+def _install_embedded_fem_part_mesh_view_provider(view_object):
+    return False
+
+
+def refresh_embedded_fem_part_view_providers(document=None):
+    """Install MbDFEM view providers on FEMPart-owned FEM child objects."""
+    FreeCADMbDFEMEmbedded.refresh_view_providers(document)
+
+
+class EmbeddedFEMPartViewProviderObserver:
+    """Keep restored FEMPart child objects on MbDFEM-local view providers."""
+
+    _refreshing = False
+
+    def _refresh(self, document):
+        if self._refreshing or document is None:
+            return
+        self._refreshing = True
+        try:
+            refresh_embedded_fem_part_view_providers(document)
+        finally:
+            self._refreshing = False
+
+    def slotActivateDocument(self, document):
+        self._refresh(document)
+
+    def slotRecomputedDocument(self, document):
+        self._refresh(document)
+
+    def slotCreatedObject(self, obj):
+        self._refresh(getattr(obj, "Document", None))
+
+    def slotChangedObject(self, obj, prop):
+        if prop in {"material", "solver"}:
+            self._refresh(getattr(obj, "Document", None))
+
+
+def install_embedded_fem_part_view_provider_observer():
+    FreeCADMbDFEMEmbedded.install_observer()
+
+
+def _is_mbd_assembly(object_):
+    try:
+        return object_ is not None and object_.isDerivedFrom("MbDFEM::MbDAssembly")
+    except Exception:
+        return False
+
+
+def _parent_assembly(assembly):
+    if assembly is None or assembly.Document is None:
+        return None
+
+    for object_ in assembly.Document.Objects:
+        try:
+            if object_ is not assembly and _is_mbd_assembly(object_):
+                if assembly in object_.assemblies:
+                    return object_
+        except Exception:
+            pass
+
+    return None
+
+
+def _top_level_assembly(assembly):
+    top_level = assembly
+    parent = _parent_assembly(top_level)
+    while parent is not None:
+        top_level = parent
+        parent = _parent_assembly(top_level)
+    return top_level
+
+
+def _selected_mbd_assembly():
+    import FreeCAD as App
+    import FreeCADGui as Gui
+
+    document = App.ActiveDocument
+    if document is None:
+        return None
+
+    try:
+        selection = Gui.Selection.getSelectionEx(document.Name)
+    except Exception:
+        selection = []
+
+    for selected in selection:
+        try:
+            if _is_mbd_assembly(selected.Object):
+                return selected.Object
+        except Exception:
+            pass
+
+    return None
+
+
+def _active_top_level_mbd_assembly():
+    import FreeCAD as App
+
+    document = App.ActiveDocument
+    if document is None:
+        return None
+
+    selected = _selected_mbd_assembly()
+    if selected is not None:
+        return _top_level_assembly(selected)
+
+    assemblies = [obj for obj in document.Objects if _is_mbd_assembly(obj)]
+    child_assemblies = set()
+    for assembly in assemblies:
+        try:
+            child_assemblies.update(child for child in assembly.assemblies if _is_mbd_assembly(child))
+        except Exception:
+            pass
+
+    for assembly in assemblies:
+        if assembly not in child_assemblies:
+            return assembly
+
+    return assemblies[0] if assemblies else None
+
+
+class CreateFEMAssemblyCommand:
+    """Command that adds an FEMAssembly for the top-level MbDAssembly."""
+
+    @staticmethod
+    def _is_mbd_assembly(object_):
+        try:
+            return object_ is not None and object_.isDerivedFrom("MbDFEM::MbDAssembly")
+        except Exception:
+            return False
+
+    @classmethod
+    def _parent_assembly(cls, assembly):
+        if assembly is None or assembly.Document is None:
+            return None
+
+        for object_ in assembly.Document.Objects:
+            try:
+                if object_ is not assembly and cls._is_mbd_assembly(object_):
+                    if assembly in object_.assemblies:
+                        return object_
+            except Exception:
+                pass
+
+        return None
+
+    @classmethod
+    def _top_level_assembly(cls, assembly):
+        top_level = assembly
+        parent = cls._parent_assembly(top_level)
+        while parent is not None:
+            top_level = parent
+            parent = cls._parent_assembly(top_level)
+        return top_level
+
+    @classmethod
+    def _selected_mbd_assembly(cls):
+        import FreeCAD as App
+        import FreeCADGui as Gui
+
+        document = App.ActiveDocument
+        if document is None:
+            return None
+
+        try:
+            selection = Gui.Selection.getSelectionEx(document.Name)
+        except Exception:
+            selection = []
+
+        for selected in selection:
+            try:
+                if cls._is_mbd_assembly(selected.Object):
+                    return selected.Object
+            except Exception:
+                pass
+
+        return None
+
+    @classmethod
+    def activeTopLevelMbDAssembly(cls):
+        import FreeCAD as App
+
+        document = App.ActiveDocument
+        if document is None:
+            return None
+
+        selected = cls._selected_mbd_assembly()
+        if selected is not None:
+            return cls._top_level_assembly(selected)
+
+        assemblies = [obj for obj in document.Objects if cls._is_mbd_assembly(obj)]
+        child_assemblies = set()
+        for assembly in assemblies:
+            try:
+                child_assemblies.update(
+                    child for child in assembly.assemblies if cls._is_mbd_assembly(child)
+                )
+            except Exception:
+                pass
+
+        for assembly in assemblies:
+            if assembly not in child_assemblies:
+                return assembly
+
+        return assemblies[0] if assemblies else None
+
+    def GetResources(self):
+        return {
+            "MenuText": "FEMAssembly",
+            "ToolTip": "Add an FEMAssembly linked to the top-level MbDAssembly",
+        }
+
+    def IsActive(self):
+        import FreeCAD as App
+
+        return App.ActiveDocument is not None
+
+    @staticmethod
+    def _active_part_container(document):
+        import FreeCADGui as Gui
+
+        try:
+            gui_document = Gui.getDocument(document)
+            if gui_document is None:
+                return None, None
+            active_view = gui_document.ActiveView
+            return active_view, active_view.getActiveObject("part")
+        except Exception:
+            return None, None
+
+    @staticmethod
+    def _remove_from_owner_groups(object_):
+        for owner in list(getattr(object_, "InList", [])):
+            try:
+                if hasattr(owner, "removeObject"):
+                    owner.removeObject(object_)
+            except Exception:
+                pass
+
+    def _ensure_fem_assembly_folders(self, fem_assembly):
+        document = fem_assembly.Document
+        folder_specs = (
+            ("_partsFolder", "MbDFEM::FEMPartsFolder", "Parts", "_Parts"),
+            ("_jointsFolder", "MbDFEM::FEMJointsFolder", "Joints", "_Joints"),
+            ("_motionsFolder", "MbDFEM::FEMMotionsFolder", "Motions", "_Motions"),
+            ("_actionsFolder", "MbDFEM::FEMActionsFolder", "Actions", "_Actions"),
+        )
+
+        folders = []
+        for property_name, type_id, label, suffix in folder_specs:
+            folder = getattr(fem_assembly, property_name, None)
+            try:
+                valid_folder = folder is not None and folder.isDerivedFrom(type_id)
+            except Exception:
+                valid_folder = False
+
+            if not valid_folder:
+                folder = document.addObject(type_id, fem_assembly.Name + suffix)
+                folder.Label = label
+                setattr(fem_assembly, property_name, folder)
+
+            try:
+                fem_assembly.addObject(folder)
+            except Exception:
+                pass
+            folders.append(folder)
+
+        return folders
+
+    @staticmethod
+    def _mbd_parts_for_fem_assembly(mbd_assembly):
+        mbd_parts = []
+        seen = set()
+        for property_name in ("fixedparts", "parts"):
+            for mbd_part in getattr(mbd_assembly, property_name, []):
+                try:
+                    valid_part = mbd_part is not None and mbd_part.isDerivedFrom("MbDFEM::MbDPart")
+                except Exception:
+                    valid_part = False
+                if valid_part and mbd_part.Name not in seen:
+                    mbd_parts.append(mbd_part)
+                    seen.add(mbd_part.Name)
+        return mbd_parts
+
+    @staticmethod
+    def _mbd_items_for_fem_assembly(mbd_assembly, property_name, type_id):
+        mbd_items = []
+        seen = set()
+        for mbd_item in getattr(mbd_assembly, property_name, []):
+            try:
+                valid_item = mbd_item is not None and mbd_item.isDerivedFrom(type_id)
+            except Exception:
+                valid_item = False
+            if valid_item and mbd_item.Name not in seen:
+                mbd_items.append(mbd_item)
+                seen.add(mbd_item.Name)
+        return mbd_items
+
+    def _populate_fem_items(self, fem_assembly, mbd_items, folder, fem_type_id, property_name):
+        fem_items = []
+        for mbd_item in mbd_items:
+            fem_item = fem_assembly.Document.addObject(fem_type_id, fem_type_id.rsplit("::", 1)[-1])
+            fem_item.Label = f"{fem_item.TypeId.rsplit('::', 1)[-1]} ({mbd_item.Label})"
+            fem_item.mbdItem = mbd_item
+            self._remove_from_owner_groups(fem_item)
+            folder.addObject(fem_item)
+            fem_items.append(fem_item)
+
+        setattr(fem_assembly, property_name, fem_items)
+        return fem_items
+
+    def _make_fem_part_material(self, fem_part, mbd_part):
+        import ObjectsFem
+        import FreeCADMbDFEMEmbedded
+
+        material = ObjectsFem.makeMaterialSolid(fem_part.Document, fem_part.Name + "_Material")
+        material.Label = f"Material ({fem_part.Label})"
+        try:
+            FreeCADMbDFEMEmbedded.install_material_view_provider(material.ViewObject)
+        except Exception:
+            pass
+        try:
+            mass_marker = mbd_part.getMassMarker()
+        except Exception:
+            mass_marker = None
+        if mass_marker is not None:
+            try:
+                material.Material = mass_marker.material
+            except Exception:
+                pass
+
+        self._remove_from_owner_groups(material)
+        try:
+            fem_part.addObject(material)
+        except Exception:
+            pass
+        fem_part.material = material
+        return material
+
+    def _make_fem_part_solver(self, fem_part):
+        import ObjectsFem
+        import FreeCADMbDFEMEmbedded
+
+        solver = ObjectsFem.makeSolverCalculiXCcxTools(fem_part.Document, fem_part.Name + "_Calculix")
+        solver.Label = f"Calculix ({fem_part.Label})"
+        try:
+            FreeCADMbDFEMEmbedded.install_solver_view_provider(solver.ViewObject)
+        except Exception:
+            pass
+        self._remove_from_owner_groups(solver)
+        try:
+            fem_part.addObject(solver)
+        except Exception:
+            pass
+        fem_part.solver = solver
+        return solver
+
+    def _populate_fem_parts(self, fem_assembly, mbd_assembly, parts_folder):
+        fem_parts = self._populate_fem_items(
+            fem_assembly,
+            self._mbd_parts_for_fem_assembly(mbd_assembly),
+            parts_folder,
+            "MbDFEM::FEMPart",
+            "parts",
+        )
+        for fem_part in fem_parts:
+            mbd_part = fem_part.mbdItem
+            try:
+                fem_part.Placement = mbd_part.Placement
+            except Exception:
+                pass
+            try:
+                fem_part.Shape = mbd_part.Shape
+            except Exception:
+                pass
+            self._make_fem_part_material(fem_part, mbd_part)
+            self._make_fem_part_solver(fem_part)
+        return fem_parts
+
+    def _populate_fem_joints(self, fem_assembly, mbd_assembly, joints_folder):
+        return self._populate_fem_items(
+            fem_assembly,
+            self._mbd_items_for_fem_assembly(mbd_assembly, "joints", "MbDFEM::MbDJoint"),
+            joints_folder,
+            "MbDFEM::FEMJoint",
+            "joints",
+        )
+
+    @staticmethod
+    def _expand_tree_objects(objects, report=False):
+        import FreeCAD as App
+        import FreeCADGui as Gui
+        from PySide6 import QtWidgets
+
+        if not objects:
+            return
+
+        fem_assembly = objects[0]
+        folders = objects[1:]
+        gui_document = Gui.getDocument(fem_assembly.Document)
+        if gui_document is None:
+            App.Console.PrintWarning("MbDFEM: FEMAssembly GUI document not found for expansion.\n")
+            return
+
+        try:
+            if report:
+                App.Console.PrintMessage("MbDFEM: expanding FEMAssembly tree item and folders.\n")
+            gui_document.toggleTreeItem(fem_assembly, 3)
+            QtWidgets.QApplication.processEvents()
+            for folder in folders:
+                gui_document.toggleTreeItem(folder, 3)
+                QtWidgets.QApplication.processEvents()
+            try:
+                gui_document.scrollToTreeItem(fem_assembly.ViewObject)
+            except Exception:
+                pass
+        except Exception as exc:
+            try:
+                App.Console.PrintWarning(f"MbDFEM: FEMAssembly tree expansion failed: {exc}\n")
+            except Exception:
+                pass
+
+    @classmethod
+    def _expand_fem_assembly_tree(cls, fem_assembly, folders):
+        from PySide6 import QtCore
+
+        objects = [fem_assembly, *folders]
+        for delay in (0, 100, 300, 700, 1200):
+            QtCore.QTimer.singleShot(
+                delay,
+                lambda objects=objects, report=(delay == 0): cls._expand_tree_objects(objects, report),
+            )
+
+    def Activated(self):
+        import FreeCAD as App
+        import FreeCADGui as Gui
+
+        mbd_assembly = self.activeTopLevelMbDAssembly()
+        if mbd_assembly is None:
+            App.Console.PrintError("No top-level MbDAssembly is active or available.\n")
+            return
+
+        document = mbd_assembly.Document
+        document.openTransaction("Create FEMAssembly")
+        try:
+            active_view, active_part = self._active_part_container(document)
+            if active_view is not None and active_part is not None:
+                active_view.setActiveObject("part", None)
+            fem_assembly = document.addObject("MbDFEM::FEMAssembly", "FEMAssembly")
+            self._remove_from_owner_groups(fem_assembly)
+            fem_assembly.mbdItem = mbd_assembly
+            fem_assembly.Placement = mbd_assembly.Placement
+            folders = self._ensure_fem_assembly_folders(fem_assembly)
+            for folder in folders:
+                self._remove_from_owner_groups(folder)
+            self._populate_fem_parts(fem_assembly, mbd_assembly, folders[0])
+            self._populate_fem_joints(fem_assembly, mbd_assembly, folders[1])
+            import FreeCADMbDFEMEmbedded
+
+            FreeCADMbDFEMEmbedded.refresh_view_providers(document)
+            if active_view is not None and active_part is not None:
+                active_view.setActiveObject("part", active_part)
+            document.commitTransaction()
+        except Exception:
+            if "active_view" in locals() and active_view is not None and active_part is not None:
+                active_view.setActiveObject("part", active_part)
+            document.abortTransaction()
+            raise
+
+        document.recompute()
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(fem_assembly)
+        self._expand_fem_assembly_tree(fem_assembly, folders)
+
+
+Gui.addCommand("MbDFEM_CreateFEMAssembly", CreateFEMAssemblyCommand())
+
+
+class CreateFEMPartMeshCommand:
+    """Command that creates a FEM mesh object for the selected FEMPart."""
+
+    def GetResources(self):
+        return {
+            "MenuText": "Create Mesh",
+            "ToolTip": "Create a FEM mesh from the linked MbDPart shape",
+        }
+
+    def IsActive(self):
+        import FreeCAD as App
+
+        return App.ActiveDocument is not None
+
+    @staticmethod
+    def _is_fem_part(object_):
+        try:
+            return object_ is not None and object_.isDerivedFrom("MbDFEM::FEMPart")
+        except Exception:
+            return False
+
+    @classmethod
+    def selectedFEMPart(cls):
+        import FreeCAD as App
+        import FreeCADGui as Gui
+
+        document = App.ActiveDocument
+        if document is None:
+            return None
+
+        try:
+            selection = Gui.Selection.getSelectionEx(document.Name)
+        except Exception:
+            selection = []
+
+        for selected in selection:
+            try:
+                if cls._is_fem_part(selected.Object):
+                    return selected.Object
+            except Exception:
+                pass
+
+        return None
+
+    @staticmethod
+    def _remove_from_owner_groups(object_):
+        for owner in list(getattr(object_, "InList", [])):
+            try:
+                if hasattr(owner, "removeObject"):
+                    owner.removeObject(object_)
+            except Exception:
+                pass
+
+    @staticmethod
+    def _shape_copy(source_part):
+        import FreeCAD as App
+
+        try:
+            shape = source_part.Shape
+        except Exception:
+            return None
+
+        if shape is None:
+            return None
+        try:
+            if shape.isNull():
+                return None
+        except Exception:
+            pass
+        try:
+            shape = shape.copy()
+        except Exception:
+            pass
+        try:
+            shape.Placement = App.Placement()
+        except Exception:
+            pass
+        return shape
+
+    def _make_mesh_shape_proxy(self, fem_part):
+        document = fem_part.Document
+        shape = self._shape_copy(fem_part)
+        if shape is None:
+            raise ValueError("Selected FEMPart has no shape to mesh")
+
+        shape_proxy = document.addObject("Part::Feature", fem_part.Name + "_MeshShape")
+        shape_proxy.Label = f"Mesh Shape ({fem_part.Label})"
+        shape_proxy.Shape = shape
+        try:
+            shape_proxy.ViewObject.Visibility = False
+        except Exception:
+            pass
+        try:
+            shape_proxy.ViewObject.ShowInTree = False
+        except Exception:
+            pass
+        self._remove_from_owner_groups(shape_proxy)
+        return shape_proxy
+
+    @staticmethod
+    def _hide_mesh_shape(mesh):
+        shape = getattr(mesh, "Shape", None)
+        view_object = getattr(shape, "ViewObject", None)
+        if view_object is None:
+            return
+        try:
+            view_object.Visibility = False
+        except Exception:
+            pass
+        try:
+            view_object.ShowInTree = False
+        except Exception:
+            pass
+
+    @staticmethod
+    def _expand_mesh_tree_item(mesh):
+        import FreeCADGui as Gui
+        from PySide6 import QtWidgets
+
+        gui_document = Gui.getDocument(mesh.Document)
+        if gui_document is None:
+            return
+
+        try:
+            QtWidgets.QApplication.processEvents()
+            gui_document.toggleTreeItem(mesh, 3)
+            QtWidgets.QApplication.processEvents()
+            gui_document.scrollToTreeItem(mesh.ViewObject)
+        except Exception:
+            pass
+
+    def Activated(self):
+        import FreeCAD as App
+        import FreeCADGui as Gui
+        import ObjectsFem
+        from femmesh import gmshtools
+
+        fem_part = self.selectedFEMPart()
+        if fem_part is None:
+            App.Console.PrintError("Select a FEMPart.\n")
+            return
+
+        document = fem_part.Document
+        document.openTransaction("Create FEMPart Mesh")
+        try:
+            shape_proxy = self._make_mesh_shape_proxy(fem_part)
+            mesh = ObjectsFem.makeMeshGmsh(document, fem_part.Name + "_Mesh")
+            mesh.Label = f"Mesh ({fem_part.Label})"
+            mesh.Shape = shape_proxy
+            mesh.ElementOrder = "2nd"
+            mesh.SecondOrderLinear = False
+            self._remove_from_owner_groups(mesh)
+            mesh.Placement = App.Placement()
+            fem_part.mesh = mesh
+            gmsh_error = gmshtools.GmshTools(mesh).create_mesh()
+            self._hide_mesh_shape(mesh)
+            if gmsh_error:
+                App.Console.PrintError(f"MbDFEM Create Mesh: Gmsh failed: {gmsh_error}\n")
+            document.commitTransaction()
+        except Exception:
+            document.abortTransaction()
+            raise
+
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(mesh)
+        self._hide_mesh_shape(mesh)
+        self._expand_mesh_tree_item(mesh)
+        App.Console.PrintMessage(
+            "MbDFEM Create Mesh: mesh object created. Double-click it to edit Gmsh settings.\n"
+        )
+
+
+Gui.addCommand("MbDFEM_CreateFEMPartMesh", CreateFEMPartMeshCommand())
 
 
 class CreateMbDMarkerCommand:
@@ -1238,14 +2323,22 @@ class MbDFEMWorkbench(Gui.Workbench):
     MenuText = "MbDFEM"
     ToolTip = "MbDFEM workbench"
 
+    @staticmethod
+    def _refresh_embedded_fem_part_view_providers():
+        import FreeCADMbDFEMEmbedded
+
+        FreeCADMbDFEMEmbedded.install_observer()
+        FreeCADMbDFEMEmbedded.refresh_view_providers()
+
     def Initialize(self):
-        import Part  # noqa: F401
-        import PartGui  # noqa: F401
-        import MbDFEM  # noqa: F401
-        import MbDFEMGui  # noqa: F401
+        import Part
+        import PartGui
+        import MbDFEM
+        import MbDFEMGui
 
         toolbar_commands = [
             "MbDFEM_CreateMbDAssembly",
+            "MbDFEM_CreateFEMAssembly",
             "MbDFEM_CreateMbDMarker",
             "MbDFEM_CreateMbDJoint",
         ]
@@ -1254,9 +2347,15 @@ class MbDFEMWorkbench(Gui.Workbench):
         ]
         self.appendToolbar("MbDFEM", toolbar_commands)
         self.appendMenu("MbDFEM", menu_commands)
+        self._refresh_embedded_fem_part_view_providers()
+
+    def Activated(self):
+        self._refresh_embedded_fem_part_view_providers()
 
     def GetClassName(self):
         return "Gui::PythonWorkbench"
 
 
 Gui.addWorkbench(MbDFEMWorkbench())
+FreeCADMbDFEMEmbedded.install_observer()
+FreeCADMbDFEMEmbedded.refresh_view_providers()

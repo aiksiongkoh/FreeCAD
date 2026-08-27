@@ -195,4 +195,5 @@ void ViewProviderMbDAssembly::setupContextMenu(QMenu* menu, QObject* receiver, c
     if (auto* otherMenu = addOtherContextMenu(menu)) {
         Gui::ViewProviderPart::setupContextMenu(otherMenu, receiver, member);
     }
+    finalizeMbDFEMContextMenu(menu);
 }

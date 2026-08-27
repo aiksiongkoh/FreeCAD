@@ -29,6 +29,7 @@ MbDFEMGuiExport App::DocumentObject* getOriginObject(App::DocumentObject* object
 MbDFEMGuiExport bool addMbDFEMContextMenuCommands(QMenu* menu,
                                                   std::initializer_list<const char*> commandNames);
 MbDFEMGuiExport QMenu* addOtherContextMenu(QMenu* menu);
+MbDFEMGuiExport void finalizeMbDFEMContextMenu(QMenu* menu);
 MbDFEMGuiExport bool delegateSubobjectDetailPath(const Gui::ViewProviderDocumentObject* parent,
                                                  const char* subname,
                                                  SoFullPath* path,

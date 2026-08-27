@@ -8,6 +8,12 @@ set(MbDFEMGui_LIBS
 
 set(MbDFEMGui_SRCS
     AppMbDFEMGui.cpp
+    ViewProviderFEMAssembly.cpp
+    ViewProviderFEMAssembly.h
+    ViewProviderFEMItem.cpp
+    ViewProviderFEMItem.h
+    ViewProviderFEMPart.cpp
+    ViewProviderFEMPart.h
     ViewProviderAxisTriad.cpp
     ViewProviderAxisTriad.h
     ViewProviderUtils.cpp

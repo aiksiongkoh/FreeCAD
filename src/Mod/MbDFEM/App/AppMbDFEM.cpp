@@ -7,6 +7,11 @@
 #include <App/DocumentObjectPy.h>
 
 #include "AsmtIO.h"
+#include "FEMAction.h"
+#include "FEMAssembly.h"
+#include "FEMItem.h"
+#include "FEMJoint.h"
+#include "FEMPart.h"
 #include "MbDAction.h"
 #include "MbDAssembly.h"
 #include "MbDFolders.h"
@@ -124,6 +129,11 @@ PyMOD_INIT_FUNC(MbDFEM)
     }
 
     PyObject* module = MbDFEM::initModule();
+    MbDFEM::FEMItem::init();
+    MbDFEM::FEMAction::init();
+    MbDFEM::FEMAssembly::init();
+    MbDFEM::FEMJoint::init();
+    MbDFEM::FEMPart::init();
     MbDFEM::MbDAssembly::init();
     MbDFEM::MbDPart::init();
     MbDFEM::MbDMarker::init();
@@ -142,6 +152,10 @@ PyMOD_INIT_FUNC(MbDFEM)
     MbDFEM::MbDJointsFolder::init();
     MbDFEM::MbDMotionsFolder::init();
     MbDFEM::MbDActionsFolder::init();
+    MbDFEM::FEMPartsFolder::init();
+    MbDFEM::FEMJointsFolder::init();
+    MbDFEM::FEMMotionsFolder::init();
+    MbDFEM::FEMActionsFolder::init();
     Base::Console().log("Loading MbDFEM module... done\n");
     PyMOD_Return(module);
 }

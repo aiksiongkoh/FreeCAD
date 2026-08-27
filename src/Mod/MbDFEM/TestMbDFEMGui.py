@@ -161,6 +161,215 @@ class MbDFEMGuiViewProviderTest(unittest.TestCase):
         self.assertNotIn("_active_mbdfem_assembly", InitGui.SolveMbDAssemblyCommand.Activated.__code__.co_names)
         self.assertNotIn("_active_mbd_assembly", InitGui.SolveMbDAssemblyCommand.Activated.__code__.co_names)
 
+    def test_fem_assembly_command_links_top_level_mbd_assembly(self):
+        import InitGui
+        import Part
+
+        assembly = self.document.addObject("MbDFEM::MbDAssembly", "Assembly")
+        subassembly = self.document.addObject("MbDFEM::MbDAssembly", "Subassembly")
+        fixed_part = self.document.addObject("MbDFEM::MbDPart", "FixedPart")
+        moving_part = self.document.addObject("MbDFEM::MbDPart", "MovingPart")
+        joint = self.document.addObject("MbDFEM::MbDJoint", "Joint")
+        assembly.Placement = App.Placement(
+            App.Vector(10, 20, 30),
+            App.Rotation(App.Vector(0, 1, 0), 40),
+        )
+        fixed_part.Shape = Part.makeBox(1, 2, 3)
+        fixed_part.Placement = App.Placement(
+            App.Vector(100, 0, 0),
+            App.Rotation(App.Vector(0, 0, 1), 30),
+        )
+        fixed_part.ensureMassMarker()
+        moving_part.Shape = Part.makeBox(4, 5, 6)
+        moving_part.Placement = App.Placement(
+            App.Vector(0, 200, 0),
+            App.Rotation(App.Vector(1, 0, 0), 20),
+        )
+        moving_part.ensureMassMarker()
+        assembly.addAssembly(subassembly)
+        assembly.addFixedPart(fixed_part)
+        assembly.addPart(moving_part)
+        assembly.addJoint(joint)
+        self.document.recompute()
+        self.Gui.Selection.clearSelection()
+        self.Gui.Selection.addSelection(subassembly)
+        self.Gui.getDocument(self.document).ActiveView.setActiveObject("part", assembly)
+
+        command = InitGui.CreateFEMAssemblyCommand()
+        command.Activated()
+
+        fem_assembly = next(
+            obj for obj in self.document.Objects if obj.TypeId == "MbDFEM::FEMAssembly"
+        )
+        self.assertIs(fem_assembly.mbdItem, assembly)
+        self.assertTrue(fem_assembly.Placement.isSame(assembly.Placement, 1e-7))
+        self.assertEqual(fem_assembly.ViewObject.TypeId, "MbDFEMGui::ViewProviderFEMAssembly")
+        self.assertTrue(fem_assembly.ViewObject.isDerivedFrom("Gui::ViewProviderGeometryObject"))
+        self.assertIsNotNone(fem_assembly.Origin)
+        self.assertFalse(fem_assembly.Origin.ViewObject.ShowInTree)
+        fem_assembly.Origin.ViewObject.ShowInTree = True
+        fem_folders = fem_assembly.ViewObject.claimChildren()
+        self.assertFalse(fem_assembly.Origin.ViewObject.ShowInTree)
+        fem_assembly.Origin.ViewObject.ShowInTree = True
+        self.assertEqual(
+            fem_assembly.ViewObject.claimChildren3D(),
+            [*fem_assembly.parts, *fem_assembly.joints],
+        )
+        self.assertFalse(fem_assembly.Origin.ViewObject.ShowInTree)
+        self.assertEqual(
+            [folder.Label for folder in fem_folders],
+            ["Parts", "Joints", "Motions", "Actions"],
+        )
+        self.assertTrue(all(folder.TypeId.startswith("MbDFEM::FEM") for folder in fem_folders))
+        self.assertTrue(all(assembly not in folder.InList for folder in fem_folders))
+        self.assertEqual(fem_assembly.Group[:4], fem_folders)
+        fem_parts = fem_folders[0].Group
+        self.assertEqual([fem_part.TypeId for fem_part in fem_parts], ["MbDFEM::FEMPart"] * 2)
+        self.assertEqual([fem_part.mbdItem for fem_part in fem_parts], [fixed_part, moving_part])
+        for fem_part, mbd_part in zip(fem_parts, [fixed_part, moving_part]):
+            self.assertTrue(fem_part.Placement.isSame(mbd_part.Placement, 1e-7))
+            self.assertEqual(len(fem_part.Shape.Solids), len(mbd_part.Shape.Solids))
+            fem_box = fem_part.Shape.BoundBox
+            mbd_box = mbd_part.Shape.BoundBox
+            for fem_value, mbd_value in zip(
+                (fem_box.XMin, fem_box.XMax, fem_box.YMin, fem_box.YMax, fem_box.ZMin, fem_box.ZMax),
+                (mbd_box.XMin, mbd_box.XMax, mbd_box.YMin, mbd_box.YMax, mbd_box.ZMin, mbd_box.ZMax),
+            ):
+                self.assertAlmostEqual(fem_value, mbd_value)
+            self.assertIsNotNone(fem_part.material)
+            self.assertEqual(fem_part.material.TypeId, "App::MaterialObjectPython")
+            self.assertEqual(fem_part.material.Category, "Solid")
+            self.assertEqual(fem_part.material.Material, mbd_part.getMassMarker().material)
+            self.assertEqual(fem_part.material.References, [])
+            self.assertIn(fem_part.material, fem_part.Group)
+            self.assertIsNotNone(fem_part.solver)
+            self.assertEqual(fem_part.solver.TypeId, "Fem::FemSolverObjectPython")
+            self.assertTrue(fem_part.solver.isDerivedFrom("Fem::FemSolverObjectPython"))
+            self.assertIn(fem_part.solver, fem_part.Group)
+            self.assertTrue(fem_part.solver.ViewObject.doubleClicked())
+            import FreeCADMbDFEMEmbedded
+
+            dialog = self.Gui.Control.activeDialog()
+            self.assertIsInstance(dialog, FreeCADMbDFEMEmbedded.FEMPartSolverTaskPanel)
+            self.assertTrue(dialog.reject())
+            self.assertIsNone(self.Gui.Control.activeDialog())
+            from femtaskpanels import task_solver_ccxtools
+
+            stock_dialog = task_solver_ccxtools._TaskPanel(fem_part.solver)
+            self.Gui.Control.showDialog(stock_dialog)
+            self.assertTrue(stock_dialog.reject())
+            self.assertIsNone(self.Gui.Control.activeDialog())
+            from femviewprovider import view_material_common
+
+            view_material_common.VPMaterialCommon(fem_part.material.ViewObject)
+            fem_part.material.References = [(fem_part, ("Solid1",))]
+            InitGui.refresh_embedded_fem_part_view_providers(self.document)
+            self.assertIsInstance(
+                fem_part.material.ViewObject.Proxy,
+                InitGui.EmbeddedFEMPartMaterialViewProvider,
+            )
+            self.assertEqual(fem_part.material.References, [])
+            self.assertTrue(fem_part.material.ViewObject.doubleClicked())
+            dialog = self.Gui.Control.activeDialog()
+            try:
+                self.assertIsInstance(dialog, InitGui.EmbeddedFEMPartMaterialTaskPanel)
+                self.assertEqual(dialog.form, [dialog.parameterWidget])
+            finally:
+                if dialog is not None:
+                    self.Gui.Control.closeDialog()
+            fem_part.Origin.ViewObject.ShowInTree = True
+            self.assertEqual(fem_part.ViewObject.claimChildren(), [fem_part.material, fem_part.solver])
+            self.assertFalse(fem_part.Origin.ViewObject.ShowInTree)
+            fem_part.Origin.ViewObject.ShowInTree = True
+            self.assertEqual(fem_part.ViewObject.claimChildren3D(), [])
+            self.assertFalse(fem_part.Origin.ViewObject.ShowInTree)
+        self.assertEqual(fem_assembly.parts, fem_parts)
+        assembly.Placement = App.Placement(
+            App.Vector(300, 400, 500),
+            App.Rotation(App.Vector(1, 0, 0), 55),
+        )
+        self.document.recompute()
+        self.assertTrue(fem_assembly.Placement.isSame(assembly.Placement, 1e-7))
+        moving_part.Placement = App.Placement(
+            App.Vector(700, 800, 900),
+            App.Rotation(App.Vector(0, 0, 1), 70),
+        )
+        self.document.recompute()
+        self.assertTrue(fem_parts[1].Placement.isSame(moving_part.Placement, 1e-7))
+        fem_joints = fem_folders[1].Group
+        self.assertEqual([fem_joint.TypeId for fem_joint in fem_joints], ["MbDFEM::FEMJoint"])
+        self.assertEqual([fem_joint.mbdItem for fem_joint in fem_joints], [joint])
+        self.assertEqual(fem_assembly.joints, fem_joints)
+        self.assertEqual(fem_assembly.ViewObject.claimChildren3D(), [*fem_parts, *fem_joints])
+        for fem_item in [*fem_parts, *fem_joints]:
+            self.assertIn(fem_item, fem_assembly.Group)
+        self.assertNotIn(assembly, fem_assembly.InList)
+        self.assertEqual(fem_assembly.Label, "FEMAssembly")
+        self.assertEqual(self.Gui.Selection.getSelection(), [fem_assembly])
+
+    def test_fem_part_create_mesh_command_uses_fem_part_shape(self):
+        import InitGui
+        import Part
+
+        mbd_part = self.document.addObject("MbDFEM::MbDPart", "MbDPart")
+        mbd_part.Shape = Part.makeBox(10, 20, 30)
+        mbd_part.Placement = App.Placement(
+            App.Vector(10, 20, 30),
+            App.Rotation(App.Vector(0, 1, 0), 40),
+        )
+        fem_part = self.document.addObject("MbDFEM::FEMPart", "FEMPart")
+        fem_part.mbdItem = mbd_part
+        fem_part.Shape = Part.makeBox(1, 2, 3)
+        fem_part.Placement = App.Placement(
+            App.Vector(40, 50, 60),
+            App.Rotation(App.Vector(1, 0, 0), 15),
+        )
+        self.document.recompute()
+        self.assertEqual(fem_part.ViewObject.TypeId, "MbDFEMGui::ViewProviderFEMPart")
+        self.assertTrue(fem_part.ViewObject.isDerivedFrom("Gui::ViewProviderGeometryObject"))
+        self.assertIsNotNone(fem_part.Origin)
+        self.assertFalse(fem_part.Origin.ViewObject.ShowInTree)
+        fem_part.Origin.ViewObject.ShowInTree = True
+        self.assertEqual(fem_part.ViewObject.claimChildren(), [])
+        self.assertFalse(fem_part.Origin.ViewObject.ShowInTree)
+        self.Gui.Selection.clearSelection()
+        self.Gui.Selection.addSelection(fem_part)
+
+        command = InitGui.CreateFEMPartMeshCommand()
+        self.assertTrue(command.IsActive())
+        self.assertNotIn(
+            "_selected_fem_part",
+            InitGui.CreateFEMPartMeshCommand.Activated.__code__.co_names,
+        )
+        command.Activated()
+
+        self.assertIsNotNone(fem_part.mesh)
+        self.assertEqual(fem_part.mesh.TypeId, "Fem::FemMeshShapeBaseObjectPython")
+        self.assertIsNot(fem_part.mesh.Shape, mbd_part)
+        self.assertEqual(fem_part.mesh.Shape.TypeId, "Part::Feature")
+        self.assertEqual(fem_part.mesh.Shape.Label, "Mesh Shape (FEMPart)")
+        self.assertEqual(
+            len(fem_part.mesh.Shape.Shape.Solids),
+            len(fem_part.Shape.Solids),
+        )
+        self.assertTrue(fem_part.mesh.Shape.Placement.isSame(App.Placement(), 1e-7))
+        self.assertTrue(fem_part.mesh.Placement.isSame(App.Placement(), 1e-7))
+        self.assertTrue(fem_part.mesh.getGlobalPlacement().isSame(fem_part.Placement, 1e-7))
+        self.assertFalse(fem_part.mesh.Shape.ViewObject.Visibility)
+        self.assertFalse(fem_part.mesh.Shape.ViewObject.ShowInTree)
+        self.assertEqual(fem_part.mesh.ElementOrder, "2nd")
+        self.assertEqual(fem_part.mesh.SecondOrderLinear, False)
+        self.assertNotIn(fem_part.mesh, fem_part.Group)
+        fem_part.Origin.ViewObject.ShowInTree = True
+        self.assertEqual(fem_part.ViewObject.claimChildren(), [fem_part.mesh])
+        self.assertFalse(fem_part.Origin.ViewObject.ShowInTree)
+        self.assertIs(fem_part.getSubObject(f"{fem_part.mesh.Name}."), fem_part.mesh)
+        fem_part.Origin.ViewObject.ShowInTree = True
+        self.assertEqual(fem_part.ViewObject.claimChildren3D(), [])
+        self.assertFalse(fem_part.Origin.ViewObject.ShowInTree)
+        self.assertIn(fem_part.mesh.Shape, fem_part.mesh.ViewObject.Proxy.claimChildren())
+        self.assertEqual(self.Gui.Selection.getSelection(), [fem_part.mesh])
+
     def test_animation_parameters_selection_opens_task_panel(self):
         import FreeCADMbDAnimationPanel
 
