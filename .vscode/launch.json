@@ -2,14 +2,37 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Debug FreeCAD",
+            "name": "Fast Debug FreeCAD",
             "type": "cppvsdbg",
             "request": "launch",
             "program": "${workspaceFolder}/build/debug/bin/FreeCAD_d.exe",
             "args": [],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}/build/debug/bin",
-            "environment": [],
+            "environment": [
+                {
+                    "name": "PYTHONDONTWRITEBYTECODE",
+                    "value": "1"
+                }
+            ],
+            "preLaunchTask": "MbDFEM: refresh scripts and caches",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "Full Debug FreeCAD",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/debug/bin/FreeCAD_d.exe",
+            "args": [],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}/build/debug/bin",
+            "environment": [
+                {
+                    "name": "PYTHONDONTWRITEBYTECODE",
+                    "value": "1"
+                }
+            ],
+            "preLaunchTask": "MbDFEM: refresh scripts caches and C++"
             "console": "integratedTerminal"
         },
         {

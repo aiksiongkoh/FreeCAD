@@ -10,6 +10,12 @@ import FreeCAD as App
 
 _POSITION_PROPERTIES = ("xs", "ys", "zs")
 _BRYANT_PROPERTIES = ("bryxs", "bryys", "bryzs")
+_KINEMATIC_VECTOR_PROPERTIES = (
+    ("velocity", ("vxs", "vys", "vzs"), 1000.0),
+    ("omega", ("omexs", "omeys", "omezs"), 1.0),
+    ("acceleration", ("axs", "ays", "azs"), 1.0),
+    ("alpha", ("alpxs", "alpys", "alpzs"), 1.0),
+)
 
 
 class AnimationController:
@@ -260,6 +266,7 @@ class AnimationController:
             if rotation is not None:
                 placement.Rotation = rotation
             target.Placement = placement
+            self._apply_kinematic_vectors(target, sample)
 
     def _position(self, target, sample):
         values = []
@@ -293,6 +300,22 @@ class AnimationController:
         y_rotation = App.Rotation(App.Vector(0, 1, 0), y_angle)
         z_rotation = App.Rotation(App.Vector(0, 0, 1), z_angle)
         return z_rotation.multiply(y_rotation).multiply(x_rotation)
+
+    def _apply_kinematic_vectors(self, target, sample):
+        for target_name, source_names, scale in _KINEMATIC_VECTOR_PROPERTIES:
+            series = [list(getattr(target, name, [])) for name in source_names]
+            if not any(series):
+                continue
+            try:
+                setattr(
+                    target,
+                    target_name,
+                    App.Vector(
+                        *(self._sample_value(values, sample) * scale for values in series)
+                    ),
+                )
+            except Exception:
+                pass
 
     @staticmethod
     def _sample_value(values, sample):

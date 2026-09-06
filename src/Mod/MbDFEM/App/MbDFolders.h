@@ -164,7 +164,37 @@ public:
     bool redirectSubName(std::ostringstream& ss,
                          App::DocumentObject* topParent,
                          App::DocumentObject* child) const override;
+    int setElementVisible(const char* element, bool visible) override;
+    int isElementVisible(const char* element) const override;
     void onChanged(const App::Property* prop) override;
+
+    bool allowDuplicateLabel() const override
+    {
+        return true;
+    }
+};
+
+class MbDFEMExport FEMResultsFolder: public App::DocumentObjectGroup
+{
+    PROPERTY_HEADER_WITH_OVERRIDE(MbDFEM::FEMResultsFolder);
+
+public:
+    FEMResultsFolder();
+    ~FEMResultsFolder() override = default;
+
+    bool allowObject(App::DocumentObject* object) override;
+    std::vector<App::DocumentObject*> addObject(App::DocumentObject* object) override;
+    std::vector<App::DocumentObject*> removeObject(App::DocumentObject* object) override;
+    bool redirectSubName(std::ostringstream& ss,
+                         App::DocumentObject* topParent,
+                         App::DocumentObject* child) const override;
+    int setElementVisible(const char* element, bool visible) override;
+    int isElementVisible(const char* element) const override;
+    void onChanged(const App::Property* prop) override;
+    const char* getViewProviderName() const override
+    {
+        return "MbDFEMGui::ViewProviderFEMResultsFolder";
+    }
 
     bool allowDuplicateLabel() const override
     {
@@ -186,6 +216,8 @@ public:
     bool redirectSubName(std::ostringstream& ss,
                          App::DocumentObject* topParent,
                          App::DocumentObject* child) const override;
+    int setElementVisible(const char* element, bool visible) override;
+    int isElementVisible(const char* element) const override;
     void onChanged(const App::Property* prop) override;
 
     bool allowDuplicateLabel() const override
@@ -208,6 +240,8 @@ public:
     bool redirectSubName(std::ostringstream& ss,
                          App::DocumentObject* topParent,
                          App::DocumentObject* child) const override;
+    int setElementVisible(const char* element, bool visible) override;
+    int isElementVisible(const char* element) const override;
     void onChanged(const App::Property* prop) override;
 
     bool allowDuplicateLabel() const override
@@ -230,6 +264,8 @@ public:
     bool redirectSubName(std::ostringstream& ss,
                          App::DocumentObject* topParent,
                          App::DocumentObject* child) const override;
+    int setElementVisible(const char* element, bool visible) override;
+    int isElementVisible(const char* element) const override;
     void onChanged(const App::Property* prop) override;
 
     bool allowDuplicateLabel() const override

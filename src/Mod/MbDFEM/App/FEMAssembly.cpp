@@ -302,6 +302,31 @@ App::DocumentObjectExecReturn* MbDFEM::FEMAssembly::execute()
     return App::Part::execute();
 }
 
+int MbDFEM::FEMAssembly::setElementVisible(const char* element, bool visible)
+{
+    auto* child = findDirectChildByInternalName(element, this);
+    if (!child) {
+        return App::Part::setElementVisible(element, visible);
+    }
+
+    child->Visibility.setValue(visible);
+    return visible ? 1 : 0;
+}
+
+int MbDFEM::FEMAssembly::isElementVisible(const char* element) const
+{
+    if (!Visibility.getValue()) {
+        return 0;
+    }
+
+    auto* child = findDirectChildByInternalName(element, this);
+    if (!child) {
+        return App::Part::isElementVisible(element);
+    }
+
+    return child->Visibility.getValue() ? 1 : 0;
+}
+
 App::DocumentObject* MbDFEM::FEMAssembly::getSubObject(const char* subname,
                                                        PyObject** pyObj,
                                                        Base::Matrix4D* mat,

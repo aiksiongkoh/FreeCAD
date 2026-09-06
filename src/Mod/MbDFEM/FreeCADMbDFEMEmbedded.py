@@ -3,7 +3,6 @@
 """MbDFEM-local view providers for FEM objects owned by FEMPart."""
 
 
-from femtaskpanels import task_material_common
 from femtaskpanels import task_solver_ccxtools
 
 import contextlib
@@ -14,9 +13,36 @@ import shutil
 
 _321_CONSTRAINT_TOLERANCE = 1.0e-9
 _321_CONSTRAINT_MARKER = "** Automatic 3-2-1 constraints\n"
+_MBD_GRAVITY_MARKER = "** MbDAssembly gravity\n"
+_MBD_DALEMBERT_MARKER = "** MbDPart D'Alembert element loads\n"
 _CCX_STATIC_NO_BC_MESSAGE = "Static analysis: No mechanical boundary conditions defined.\n"
 _INP_SECTION_SEPARATOR = 59 * "*"
+_MBD_TO_CCX_GRAVITY_SCALE = 1000.0
+_CAD_LENGTH_TO_MBD_LENGTH_SCALE = 0.001
 _original_solver_reject = None
+_original_result_set_label = None
+
+
+def _linked_results(fem_part):
+    results = getattr(fem_part, "results", [])
+    if results is None:
+        return []
+    if isinstance(results, (list, tuple)):
+        return [result for result in results if result is not None]
+    return [results]
+
+
+def _append_linked_result(fem_part, result):
+    if result is None:
+        return
+    results = _linked_results(fem_part)
+    if result not in results:
+        results.append(result)
+        fem_part.results = results
+    try:
+        fem_part.synchronizeResultsFolder()
+    except Exception:
+        pass
 
 
 def install_solver_task_panel_close_fallback():
@@ -41,26 +67,72 @@ def install_solver_task_panel_close_fallback():
     task_solver_ccxtools._TaskPanel.reject = reject
 
 
-class FEMPartMaterialTaskPanel(task_material_common._TaskPanel):
-    """FEM material editor without a geometry selector."""
+def install_result_task_panel_label_fallback():
+    """Avoid the Coin overlay label path that crashes in MbDFEM result display."""
+    global _original_result_set_label
+
+    from femtaskpanels import task_result_mechanical
+
+    current_set_label = task_result_mechanical._TaskPanel.set_label
+    if getattr(current_set_label, "_mbdfem_overlay_fallback", False):
+        return
+
+    if _original_result_set_label is not None:
+        return
+
+    _original_result_set_label = current_set_label
+
+    def set_label(task_panel, result_name, mesh_data):
+        result_obj = getattr(task_panel, "result_obj", None)
+        if fem_part_for_result(result_obj) is not None:
+            return
+        return _original_result_set_label(task_panel, result_name, mesh_data)
+
+    set_label._mbdfem_overlay_fallback = True
+    task_result_mechanical._TaskPanel.set_label = set_label
+
+
+class FEMPartMaterialTaskPanel:
+    """Read-only FEM material view synchronized from the linked MbDMassMarker."""
 
     def __init__(self, obj):
-        super().__init__(obj)
+        from PySide import QtWidgets
+
+        self.obj = obj
+        self.material = dict(getattr(obj, "Material", {}) or {})
+        self.parameterWidget = QtWidgets.QWidget()
+        self.parameterWidget.setWindowTitle("FEM Material")
+        self.parameterWidget.setMinimumWidth(320)
+
+        layout = QtWidgets.QVBoxLayout(self.parameterWidget)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+
+        title = QtWidgets.QLabel(getattr(obj, "Label", obj.Name))
+        title.setStyleSheet("font-weight: bold;")
+        layout.addWidget(title)
+
+        source = QtWidgets.QLabel("Read-only material synchronized from the linked MbDMassMarker.")
+        source.setWordWrap(True)
+        layout.addWidget(source)
+
+        values = QtWidgets.QGroupBox("Material Properties")
+        values_layout = QtWidgets.QFormLayout(values)
+        values_layout.setFieldGrowthPolicy(QtWidgets.QFormLayout.AllNonFixedFieldsGrow)
+        for label, key in _material_display_rows(getattr(obj, "Category", "")):
+            values_layout.addRow(label, _read_only_value(_material_value(self.material, key)))
+        layout.addWidget(values)
+        layout.addStretch(1)
+
         self.form = [self.parameterWidget]
 
+    def getStandardButtons(self):
+        from PySide import QtGui
+
+        return QtGui.QDialogButtonBox.Ok
+
     def accept(self):
-        self.obj.Material = self.material
-        self.obj.UUID = self.uuid
-        self.obj.References = []
-        try:
-            self.selectionWidget.finish_selection()
-        except Exception:
-            pass
-        gui_doc = self.obj.ViewObject.Document
-        gui_doc.Document.recompute()
-        gui_doc.resetEdit()
-        gui_doc.Document.commitTransaction()
-        return True
+        return self.reject()
 
     def reject(self):
         try:
@@ -72,6 +144,56 @@ class FEMPartMaterialTaskPanel(task_material_common._TaskPanel):
         gui_doc.resetEdit()
         gui_doc.Document.recompute()
         return True
+
+
+def _read_only_value(value):
+    from PySide import QtCore, QtWidgets
+
+    field = QtWidgets.QLineEdit(value)
+    field.setReadOnly(True)
+    field.setFocusPolicy(QtCore.Qt.NoFocus)
+    return field
+
+
+def _material_display_rows(category):
+    rows = [
+        ("Name", "Name"),
+        ("Density", "Density"),
+        ("Young's modulus", "YoungsModulus"),
+        ("Poisson ratio", "PoissonRatio"),
+        ("Thermal conductivity", "ThermalConductivity"),
+        ("Thermal expansion", "ThermalExpansionCoefficient"),
+        ("Reference temperature", "ThermalExpansionReferenceTemperature"),
+        ("Specific heat", "SpecificHeat"),
+    ]
+    if category == "Fluid":
+        rows.insert(3, ("Kinematic viscosity", "KinematicViscosity"))
+    return rows
+
+
+def _material_value(material, key):
+    value = material.get(key, "")
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _solver_state_count(fem_part):
+    try:
+        import FreeCADMbDFEMResultsPanel
+
+        return FreeCADMbDFEMResultsPanel.state_count(fem_part)
+    except Exception:
+        return 0
+
+
+def _solver_state_time_text(fem_part, state_index):
+    try:
+        import FreeCADMbDFEMResultsPanel
+
+        return f"{FreeCADMbDFEMResultsPanel._state_time(fem_part, state_index):.6g} s"
+    except Exception:
+        return ""
 
 
 class FEMPartMaterialViewProvider:
@@ -186,23 +308,50 @@ class FEMPartAnalysisAdapter:
     def Group(self):
         group = []
         for obj in (
-            getattr(self.fem_part, "material", None),
+            _fem_part_material_object(self.fem_part),
             getattr(self.fem_part, "mesh", None),
             getattr(self.fem_part, "solver", None),
         ):
             if obj is not None:
                 group.append(obj)
+        group.extend(_linked_results(self.fem_part))
+        visual = getattr(self.fem_part, "visual", None)
+        if visual is not None:
+            group.append(visual)
         group.extend(obj for obj in self._extra_group if obj is not None)
         return group
 
     def addObject(self, obj):
+        if _is_result_mesh(obj):
+            _hide_result_mesh(obj)
+            if obj not in self._extra_group:
+                self._extra_group.append(obj)
+            return [obj]
+        if _is_result_object(obj):
+            install_result_task_panel_label_fallback()
+            _append_linked_result(self.fem_part, obj)
+            self._add_to_fem_part_group(obj)
+            return [obj]
+        if _is_post_pipeline(obj):
+            self.fem_part.visual = obj
+            _hide_post_pipeline(obj)
+            self._add_to_fem_part_group(obj)
+            return [obj]
         if obj not in self._extra_group:
             self._extra_group.append(obj)
+        return [obj]
+
+    def _add_to_fem_part_group(self, obj):
+        if _is_result_object(obj):
+            try:
+                self.fem_part.ensureResultsFolder().addObject(obj)
+            except Exception:
+                pass
+            return
         try:
             self.fem_part.addObject(obj)
         except Exception:
             pass
-        return [obj]
 
     def getObject(self, name):
         for obj in self.Group:
@@ -228,6 +377,16 @@ class FEMPartCcxTools:
         from femtools.ccxtools import FemToolsCcx
 
         class FEMPartCcxToolsAdapter(FemToolsCcx):
+            def setup_working_dir(self, param_working_dir=None, create=False):
+                pinned_working_dir = getattr(self, "_mbdfem_working_dir", None)
+                if param_working_dir is None and pinned_working_dir:
+                    param_working_dir = pinned_working_dir
+                    create = True
+
+                super().setup_working_dir(param_working_dir, create)
+                if param_working_dir is not None:
+                    self._mbdfem_working_dir = self.working_dir
+
             def setup_ccx(self, ccx_binary=None, ccx_binary_sig="CalculiX"):
                 super().setup_ccx(ccx_binary, ccx_binary_sig)
                 self.ccx_binary = _resolve_ccx_binary(self.ccx_binary)
@@ -240,11 +399,48 @@ class FEMPartCcxTools:
 
             def write_inp_file(self):
                 super().write_inp_file()
+                self._use_configured_input_basename()
+                self.auto_321_constraint_nodes = None
+                if self.inp_file_name:
+                    gravity = _add_mbd_gravity_to_inp(self.inp_file_name, fem_part)
+                    dalembert_loads = _add_mbd_dalembert_loads_to_inp(
+                        self.inp_file_name,
+                        fem_part,
+                    )
+                    if gravity is not None or dalembert_loads:
+                        _ensure_mbd_density_in_inp(self.inp_file_name, fem_part)
                 nodes = _fem_mesh_nodes(self.mesh)
                 if self.inp_file_name and nodes:
-                    _add_321_constraints_to_inp(
+                    self.auto_321_constraint_nodes = _add_321_constraints_to_inp(
                         self.inp_file_name,
                         nodes,
+                    )
+
+            def _use_configured_input_basename(self):
+                if not getattr(self, "inp_file_name", None):
+                    return
+                base_name = getattr(self, "base_name", None)
+                working_dir = getattr(self, "working_dir", None)
+                if not base_name or not working_dir:
+                    return
+
+                desired_inp_file = os.path.join(working_dir, f"{base_name}.inp")
+                current_inp_file = self.inp_file_name
+                if os.path.normcase(os.path.abspath(current_inp_file)) == os.path.normcase(
+                    os.path.abspath(desired_inp_file)
+                ):
+                    return
+
+                try:
+                    os.makedirs(working_dir, exist_ok=True)
+                    os.replace(current_inp_file, desired_inp_file)
+                    self.inp_file_name = desired_inp_file
+                except OSError as exc:
+                    import FreeCAD
+
+                    FreeCAD.Console.PrintWarning(
+                        f"MbDFEM: unable to rename CalculiX input file to "
+                        f"{desired_inp_file}: {exc}\n"
                     )
 
             def load_results_ccxfrd(self):
@@ -282,6 +478,154 @@ def _fem_mesh_nodes(mesh_object):
         return mesh_object.FemMesh.Nodes
     except Exception:
         return {}
+
+
+def _fem_mesh_element_ids(mesh_object):
+    try:
+        fem_mesh = mesh_object.FemMesh
+    except Exception:
+        return []
+
+    element_ids = []
+    for element_kind in ("Volumes", "Faces", "Edges"):
+        try:
+            element_ids.extend(getattr(fem_mesh, element_kind))
+        except Exception:
+            pass
+    return sorted(set(element_ids))
+
+
+def _fem_part_material_object(fem_part, create=True):
+    source_material = _mbd_mass_marker_material(fem_part)
+    if source_material is None:
+        return None
+
+    material = _existing_fem_part_material_object(fem_part)
+    if material is None and create and source_material is not None:
+        try:
+            import ObjectsFem
+
+            material = ObjectsFem.makeMaterialSolid(
+                fem_part.Document,
+                fem_part.Name + "_Material",
+            )
+            material.Label = f"Material ({fem_part.Label})"
+        except Exception:
+            material = None
+        if material is not None:
+            try:
+                fem_part.addObject(material)
+            except Exception:
+                pass
+
+    if material is not None:
+        _sync_fem_material_from_mbd_material(material, source_material)
+        _remove_from_other_owner_groups(material, fem_part)
+    return material
+
+
+def _existing_fem_part_material_object(fem_part):
+    for obj in getattr(fem_part, "Group", []):
+        try:
+            if obj.isDerivedFrom("App::MaterialObject"):
+                return obj
+        except Exception:
+            pass
+        if getattr(obj, "TypeId", None) == "App::MaterialObjectPython":
+            return obj
+    return None
+
+
+def _mbd_mass_marker_material(fem_part):
+    mbd_part = getattr(fem_part, "mbdItem", None)
+    try:
+        mass_marker = mbd_part.getMassMarker()
+    except Exception:
+        mass_marker = None
+    if mass_marker is None:
+        try:
+            mass_marker = mbd_part.ensureMassMarker()
+        except Exception:
+            mass_marker = None
+    if mass_marker is None:
+        return None
+
+    try:
+        return mass_marker.material
+    except Exception:
+        return None
+
+
+def _sync_fem_material_from_mbd_material(material, source_material):
+    if source_material is not None:
+        try:
+            material.Material = source_material
+        except Exception:
+            pass
+    try:
+        material.References = []
+    except Exception:
+        pass
+
+
+def _remove_from_other_owner_groups(object_, allowed_owner):
+    for owner in list(getattr(object_, "InList", [])):
+        if owner is allowed_owner:
+            continue
+        try:
+            if hasattr(owner, "removeObject"):
+                owner.removeObject(object_)
+        except Exception:
+            pass
+    try:
+        install_material_view_provider(object_.ViewObject)
+    except Exception:
+        pass
+
+
+def _is_result_mesh(obj):
+    try:
+        return obj.isDerivedFrom("Fem::FemMeshObject") and obj.Name.endswith("_Results_Mesh")
+    except Exception:
+        return False
+
+
+def _hide_result_mesh(obj):
+    view_object = getattr(obj, "ViewObject", None)
+    if view_object is None:
+        return
+    try:
+        view_object.Visibility = False
+    except Exception:
+        pass
+    try:
+        view_object.ShowInTree = False
+    except Exception:
+        pass
+
+
+def _hide_post_pipeline(obj):
+    view_object = getattr(obj, "ViewObject", None)
+    if view_object is None:
+        return
+    try:
+        view_object.ShowInTree = False
+    except Exception:
+        pass
+
+
+def _is_result_object(obj):
+    try:
+        return obj.isDerivedFrom("Fem::FemResultObject")
+    except Exception:
+        return False
+
+
+def _is_post_pipeline(obj):
+    try:
+        return obj.isDerivedFrom("Fem::FemPostPipeline")
+    except Exception:
+        return False
 
 
 def _resolve_ccx_binary(ccx_binary):
@@ -342,24 +686,30 @@ def _add_321_constraints_to_inp(inp_file_name, nodes):
         App.Console.PrintWarning(
             "CalculiX 3-2-1 constraints skipped: at least three suitable mesh nodes are needed.\n"
         )
-        return
+        return None
 
     with open(inp_file_name, "r", encoding="utf-8") as inp_file:
         content = inp_file.read()
 
+    constraint_nodes = _321_constraint_nodes(nodes, constraints)
     if _321_CONSTRAINT_MARKER in content:
-        return
+        return constraint_nodes
 
     insert_at = _find_321_constraint_insert_position(content)
     if insert_at < 0:
         App.Console.PrintWarning(
             "CalculiX 3-2-1 constraints skipped: no *STEP section found in input file.\n"
         )
-        return
+        return None
 
     node_xyz, node_yz, node_z = constraints
+    node_comments = "".join(
+        f"** {label} {node_id}: {_format_node_coordinates(node)}\n"
+        for label, node_id, node in constraint_nodes
+    )
     constraint_block = (
         "\n{}\n"
+        "{}"
         "{}"
         "*BOUNDARY\n"
         "{},1,1,0\n"
@@ -371,6 +721,7 @@ def _add_321_constraints_to_inp(inp_file_name, nodes):
     ).format(
         _INP_SECTION_SEPARATOR,
         _321_CONSTRAINT_MARKER,
+        node_comments,
         node_xyz,
         node_xyz,
         node_xyz,
@@ -381,9 +732,350 @@ def _add_321_constraints_to_inp(inp_file_name, nodes):
 
     with open(inp_file_name, "w", encoding="utf-8") as inp_file:
         inp_file.write(content[:insert_at] + constraint_block + content[insert_at:])
+    return constraint_nodes
+
+
+def _321_constraint_nodes(nodes, constraints):
+    node_xyz, node_yz, node_z = constraints
+    return (
+        ("nodeXYZ", node_xyz, nodes[node_xyz]),
+        ("nodeYZ", node_yz, nodes[node_yz]),
+        ("nodeZ", node_z, nodes[node_z]),
+    )
+
+
+def _format_node_coordinates(node):
+    return "x={:.12g}, y={:.12g}, z={:.12g}".format(node.x, node.y, node.z)
+
+
+def _format_321_constraint_feedback(constraint_nodes):
+    if not constraint_nodes:
+        return []
+    return [
+        "Automatic 3-2-1 constraint nodes:",
+        *[
+            f"{label} {node_id}: {_format_node_coordinates(node)}"
+            for label, node_id, node in constraint_nodes
+        ],
+    ]
+
+
+def _add_mbd_gravity_to_inp(inp_file_name, fem_part):
+    import FreeCAD as App
+
+    gravity = _mbd_gravity_vector(fem_part)
+    if gravity is None:
+        return None
+
+    magnitude = _vector_magnitude(gravity)
+    if magnitude <= _321_CONSTRAINT_TOLERANCE:
+        return None
+
+    with open(inp_file_name, "r", encoding="utf-8") as inp_file:
+        content = inp_file.read()
+
+    if _MBD_GRAVITY_MARKER in content:
+        return gravity
+
+    insert_at = _find_in_step_insert_position(content)
+    if insert_at < 0:
+        App.Console.PrintWarning(
+            "CalculiX MbDAssembly gravity skipped: no *STEP section found in input file.\n"
+        )
+        return None
+
+    direction = (
+        gravity.x / magnitude,
+        gravity.y / magnitude,
+        gravity.z / magnitude,
+    )
+    gravity_block = (
+        "\n{}\n"
+        "{}"
+        "*DLOAD\n"
+        "Eall,GRAV,{:.13G},{:.13G},{:.13G},{:.13G}\n"
+    ).format(
+        _INP_SECTION_SEPARATOR,
+        _MBD_GRAVITY_MARKER,
+        magnitude * _MBD_TO_CCX_GRAVITY_SCALE,
+        direction[0],
+        direction[1],
+        direction[2],
+    )
+
+    with open(inp_file_name, "w", encoding="utf-8") as inp_file:
+        inp_file.write(content[:insert_at] + gravity_block + content[insert_at:])
+    return gravity
+
+
+def _add_mbd_dalembert_loads_to_inp(inp_file_name, fem_part):
+    import FreeCAD as App
+
+    loads = _mbd_dalembert_element_loads(fem_part)
+    if not loads:
+        return []
+
+    with open(inp_file_name, "r", encoding="utf-8") as inp_file:
+        content = inp_file.read()
+
+    if _MBD_DALEMBERT_MARKER in content:
+        return loads
+
+    insert_at = _find_in_step_insert_position(content)
+    if insert_at < 0:
+        App.Console.PrintWarning(
+            "CalculiX MbDPart D'Alembert loads skipped: no *STEP section found in input file.\n"
+        )
+        return []
+
+    load_lines = "".join(
+        "{},GRAV,{:.13G},{:.13G},{:.13G},{:.13G}\n".format(
+            element_id,
+            magnitude * _MBD_TO_CCX_GRAVITY_SCALE,
+            direction.x,
+            direction.y,
+            direction.z,
+        )
+        for element_id, magnitude, direction in loads
+    )
+    load_block = (
+        "\n{}\n"
+        "{}"
+        "*DLOAD\n"
+        "{}"
+    ).format(
+        _INP_SECTION_SEPARATOR,
+        _MBD_DALEMBERT_MARKER,
+        load_lines,
+    )
+
+    with open(inp_file_name, "w", encoding="utf-8") as inp_file:
+        inp_file.write(content[:insert_at] + load_block + content[insert_at:])
+    return loads
+
+
+def _ensure_mbd_density_in_inp(inp_file_name, fem_part):
+    density = _mbd_density_in_tonne_per_mm3(fem_part)
+    if density is None:
+        return False
+
+    material = _fem_part_material_object(fem_part, create=False)
+    material_name = getattr(material, "Name", None)
+    if not material_name:
+        return False
+
+    with open(inp_file_name, "r", encoding="utf-8") as inp_file:
+        content = inp_file.read()
+
+    material_at = _find_material_section(content, material_name)
+    if material_at < 0:
+        return False
+
+    next_material_at = content.find("\n*MATERIAL", material_at + 1)
+    section_end = next_material_at if next_material_at >= 0 else len(content)
+    section = content[material_at:section_end]
+    if "\n*DENSITY" in section.upper():
+        return False
+
+    insert_at = _find_material_density_insert_position(content, material_at, section_end)
+    density_block = "*DENSITY\n{:.13G}\n".format(density)
+    with open(inp_file_name, "w", encoding="utf-8") as inp_file:
+        inp_file.write(content[:insert_at] + density_block + content[insert_at:])
+    return True
+
+
+def _find_material_section(content, material_name):
+    target = material_name.upper()
+    search_at = 0
+    while True:
+        material_at = content.upper().find("*MATERIAL", search_at)
+        if material_at < 0:
+            return -1
+        line_end = content.find("\n", material_at)
+        if line_end < 0:
+            line_end = len(content)
+        line = content[material_at:line_end].upper()
+        if "NAME=" in line and line.split("NAME=", 1)[1].split(",", 1)[0].strip() == target:
+            return material_at
+        search_at = line_end
+
+
+def _find_material_density_insert_position(content, material_at, section_end):
+    elastic_at = content.upper().find("\n*ELASTIC", material_at, section_end)
+    if elastic_at < 0:
+        line_end = content.find("\n", material_at)
+        return len(content) if line_end < 0 else line_end + 1
+
+    next_keyword_at = content.find("\n*", elastic_at + 1, section_end)
+    if next_keyword_at >= 0:
+        return next_keyword_at + 1
+    return section_end
+
+
+def _mbd_density_in_tonne_per_mm3(fem_part):
+    density = _material_density_in_tonne_per_mm3(
+        _fem_part_material_object(fem_part, create=False)
+    )
+    if density is not None:
+        return density
+
+    mbd_part = getattr(fem_part, "mbdItem", None)
+    try:
+        mass_marker = mbd_part.getMassMarker()
+    except Exception:
+        mass_marker = None
+    if mass_marker is None:
+        return None
+
+    density = _material_density_in_tonne_per_mm3(mass_marker)
+    if density is not None:
+        return density
+
+    try:
+        return mass_marker.densityInKgPerMm3() * 0.001
+    except Exception:
+        return None
+
+
+def _material_density_in_tonne_per_mm3(material_owner):
+    try:
+        material = material_owner.Material
+    except Exception:
+        material = None
+
+    if isinstance(material, dict) and material.get("Density"):
+        try:
+            import FreeCAD as App
+
+            return App.Units.Quantity(material["Density"]).getValueAs("t/mm^3").Value
+        except Exception:
+            pass
+
+    try:
+        physical_density = material_owner.material.getPhysicalValue("Density")
+    except Exception:
+        physical_density = None
+    if physical_density:
+        try:
+            import FreeCAD as App
+
+            return App.Units.Quantity(str(physical_density)).getValueAs("t/mm^3").Value
+        except Exception:
+            pass
+
+    return None
+
+
+def _mbd_dalembert_element_loads(fem_part):
+    mbd_part = getattr(fem_part, "mbdItem", None)
+    mesh_object = getattr(fem_part, "mesh", None)
+    if mbd_part is None or mesh_object is None:
+        return []
+
+    loads = []
+    for element_id in _fem_mesh_element_ids(mesh_object):
+        try:
+            centroid = fem_part.elementCentroidLocal(int(element_id))
+            acceleration = mbd_part.globalAccelerationOf(
+                _scaled_vector(centroid, _CAD_LENGTH_TO_MBD_LENGTH_SCALE)
+            )
+        except Exception:
+            continue
+
+        inertial_acceleration = _vector_in_fem_part_coordinates(
+            fem_part,
+            _scaled_vector(acceleration, -1.0),
+        )
+        magnitude = _vector_magnitude(inertial_acceleration)
+        if magnitude <= _321_CONSTRAINT_TOLERANCE:
+            direction = _unit_x_vector()
+        else:
+            direction = _scaled_vector(inertial_acceleration, 1.0 / magnitude)
+        loads.append(
+            (
+                element_id,
+                magnitude,
+                direction,
+            )
+        )
+    return loads
+
+
+def _unit_x_vector():
+    import FreeCAD as App
+
+    return App.Vector(1, 0, 0)
+
+
+def _scaled_vector(vector, scale):
+    import FreeCAD as App
+
+    return App.Vector(vector.x * scale, vector.y * scale, vector.z * scale)
+
+
+def _vector_magnitude(vector):
+    return math.sqrt(vector.x * vector.x + vector.y * vector.y + vector.z * vector.z)
+
+
+def _mbd_gravity_vector(fem_part):
+    assembly = _owning_mbd_assembly(fem_part)
+    if assembly is None:
+        return None
+
+    try:
+        gravity_object = assembly.getGravity()
+    except Exception:
+        gravity_object = getattr(assembly, "gravity", None)
+    if gravity_object is None:
+        return None
+
+    try:
+        gravity = gravity_object.gravity
+    except Exception:
+        return None
+
+    assembly_rotation = _global_rotation(assembly)
+    gravity_global = assembly_rotation.multVec(gravity)
+    return _vector_in_fem_part_coordinates(fem_part, gravity_global)
+
+
+def _vector_in_fem_part_coordinates(fem_part, vector):
+    mbd_part = getattr(fem_part, "mbdItem", None)
+    local_reference = mbd_part if mbd_part is not None else fem_part
+    return _global_rotation(local_reference).inverted().multVec(vector)
+
+
+def _global_rotation(obj):
+    try:
+        return obj.getGlobalPlacement().Rotation
+    except Exception:
+        return obj.Placement.Rotation
+
+
+def _owning_mbd_assembly(fem_part):
+    mbd_part = getattr(fem_part, "mbdItem", None)
+    document = getattr(fem_part, "Document", None)
+    if document is None or mbd_part is None:
+        return None
+
+    for obj in getattr(document, "Objects", []):
+        try:
+            if not obj.isDerivedFrom("MbDFEM::MbDAssembly"):
+                continue
+            if mbd_part in list(getattr(obj, "parts", [])) or mbd_part in list(
+                getattr(obj, "fixedparts", [])
+            ):
+                return obj
+        except Exception:
+            pass
+    return None
 
 
 def _find_321_constraint_insert_position(content):
+    return _find_in_step_insert_position(content)
+
+
+def _find_in_step_insert_position(content):
     step_at = content.find("*STEP")
     if step_at < 0:
         return -1
@@ -487,19 +1179,19 @@ def _select_node_z(node_items, node_xyz, xyz, node_yz, line_length, tolerance):
         if distance == 0:
             continue
 
-        direction_cosine = dz / distance
+        absolute_direction_cosine = abs(dz / distance)
         if (
             best is None
-            or direction_cosine < best[1] - tolerance
+            or absolute_direction_cosine < best[1] - tolerance
             or (
-                abs(direction_cosine - best[1]) <= tolerance
+                abs(absolute_direction_cosine - best[1]) <= tolerance
                 and (
                     distance > best[2] + tolerance
                     or (abs(distance - best[2]) <= tolerance and node_id < best[0])
                 )
             )
         ):
-            best = (node_id, direction_cosine, distance)
+            best = (node_id, absolute_direction_cosine, distance)
 
     if best is None:
         return None
@@ -507,118 +1199,342 @@ def _select_node_z(node_items, node_xyz, xyz, node_yz, line_length, tolerance):
     return best[0]
 
 
-class FEMPartSolverTaskPanel(task_solver_ccxtools._TaskPanel):
+class FEMPartSolverTaskPanel:
     """Calculix task panel using FEMPart material, mesh, and solver as analysis members."""
 
     def __init__(self, fem_part, solver_object):
-        import time
+        from PySide import QtWidgets
+        import FreeCAD as App
 
-        from PySide import QtCore
-        import FreeCAD
-        import FreeCADGui
-
-        self.form = FreeCADGui.PySideUic.loadUi(
-            FreeCAD.getHomePath() + "Mod/Fem/Resources/ui/SolverCcxTools.ui"
-        )
-
+        self.fem_part = fem_part
+        self.solver_object = solver_object
         self.fea = FEMPartCcxTools(fem_part, solver_object)
-        self.fea.setup_working_dir()
+        self._set_fea_state_directory(0)
         try:
             self.fea.setup_ccx()
         except FileNotFoundError as exc:
-            FreeCAD.Console.PrintWarning(exc.args[0])
-
-        self.Calculix = QtCore.QProcess()
-        self.Timer = QtCore.QTimer()
-        self.Timer.start(300)
+            App.Console.PrintWarning(exc.args[0])
 
         self.fem_console_message = ""
-        self.CCX_pipeline = None
-        self.CCX_mesh_visibility = False
 
-        ccx_mesh = self.fea.analysis.Document.getObject("CCX_Results_Mesh")
-        if ccx_mesh is not None:
-            self.CCX_mesh_visibility = ccx_mesh.ViewObject.Visibility
+        self.form = QtWidgets.QWidget()
+        self.form.setWindowTitle("FEMPart Calculix")
+        self.form.setMinimumWidth(340)
 
-        QtCore.QObject.connect(
-            self.form.tb_choose_working_dir,
-            QtCore.SIGNAL("clicked()"),
-            self.choose_working_dir,
-        )
-        QtCore.QObject.connect(
-            self.form.pb_write_inp,
-            QtCore.SIGNAL("clicked()"),
-            self.write_input_file_handler,
-        )
-        QtCore.QObject.connect(
-            self.form.pb_edit_inp,
-            QtCore.SIGNAL("clicked()"),
-            self.editCalculixInputFile,
-        )
-        QtCore.QObject.connect(self.form.pb_run_ccx, QtCore.SIGNAL("clicked()"), self.stopCalculix)
-        QtCore.QObject.connect(self.form.pb_run_ccx, QtCore.SIGNAL("clicked()"), self.runCalculix)
-        QtCore.QObject.connect(
-            self.form.rb_static_analysis,
-            QtCore.SIGNAL("clicked()"),
-            self.select_static_analysis,
-        )
-        QtCore.QObject.connect(
-            self.form.rb_frequency_analysis,
-            QtCore.SIGNAL("clicked()"),
-            self.select_frequency_analysis,
-        )
-        QtCore.QObject.connect(
-            self.form.rb_thermomech_analysis,
-            QtCore.SIGNAL("clicked()"),
-            self.select_thermomech_analysis,
-        )
-        QtCore.QObject.connect(
-            self.form.rb_check_mesh,
-            QtCore.SIGNAL("clicked()"),
-            self.select_check_mesh,
-        )
-        QtCore.QObject.connect(
-            self.form.rb_buckling_analysis,
-            QtCore.SIGNAL("clicked()"),
-            self.select_buckling_analysis,
-        )
-        QtCore.QObject.connect(self.Calculix, QtCore.SIGNAL("started()"), self.calculixStarted)
-        QtCore.QObject.connect(
-            self.Calculix,
-            QtCore.SIGNAL("stateChanged(QProcess::ProcessState)"),
-            self.calculixStateChanged,
-        )
-        QtCore.QObject.connect(
-            self.Calculix,
-            QtCore.SIGNAL("error(QProcess::ProcessError)"),
-            self.calculixError,
-        )
-        QtCore.QObject.connect(
-            self.Calculix,
-            QtCore.SIGNAL("finished(int, QProcess::ExitStatus)"),
-            self.calculixFinished,
-        )
-        QtCore.QObject.connect(self.Timer, QtCore.SIGNAL("timeout()"), self.UpdateText)
+        layout = QtWidgets.QVBoxLayout(self.form)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
 
-        self.Start = time.time()
-        self.update()
+        self._append_solving_panel(layout)
+
+        header = QtWidgets.QGroupBox("FEMPart")
+        header_layout = QtWidgets.QFormLayout(header)
+        self.fem_part_label = _read_only_value(getattr(fem_part, "Label", ""))
+        self.mbd_part_label = _read_only_value(getattr(getattr(fem_part, "mbdItem", None), "Label", ""))
+        header_layout.addRow("FEMPart", self.fem_part_label)
+        header_layout.addRow("MbDPart", self.mbd_part_label)
+        layout.addWidget(header)
+
+        state_group = QtWidgets.QGroupBox("State")
+        state_layout = QtWidgets.QFormLayout(state_group)
+        self.state_spin = QtWidgets.QSpinBox()
+        self.state_spin.setRange(0, max(_solver_state_count(fem_part) - 1, 0))
+        self.time_label = _read_only_value(_solver_state_time_text(fem_part, 0))
+        self.working_dir_edit = _read_only_value(getattr(self.fea, "working_dir", ""))
+        self.base_name_edit = _read_only_value(getattr(self.fea, "base_name", ""))
+        state_layout.addRow("State", self.state_spin)
+        state_layout.addRow("Time", self.time_label)
+        state_layout.addRow("Working directory", self.working_dir_edit)
+        state_layout.addRow("Base name", self.base_name_edit)
+        layout.addWidget(state_group)
+
+        prereq_group = QtWidgets.QGroupBox("Prerequisites")
+        prereq_layout = QtWidgets.QFormLayout(prereq_group)
+        self.mesh_status = QtWidgets.QLabel()
+        self.material_status = QtWidgets.QLabel()
+        self.solver_status = QtWidgets.QLabel()
+        prereq_layout.addRow("Mesh", self.mesh_status)
+        prereq_layout.addRow("Material", self.material_status)
+        prereq_layout.addRow("CalculiX", self.solver_status)
+        layout.addWidget(prereq_group)
+
+        actions = QtWidgets.QGroupBox("Actions")
+        action_layout = QtWidgets.QGridLayout(actions)
+        self.create_mesh_button = QtWidgets.QPushButton("Create Mesh")
+        self.check_button = QtWidgets.QPushButton("Check")
+        self.write_inp_button = QtWidgets.QPushButton("Write .inp")
+        self.run_button = QtWidgets.QPushButton("Run CalculiX")
+        self.solve_state_button = QtWidgets.QPushButton("Solve State")
+        action_layout.addWidget(self.create_mesh_button, 0, 0)
+        action_layout.addWidget(self.check_button, 0, 1)
+        action_layout.addWidget(self.write_inp_button, 1, 0)
+        action_layout.addWidget(self.run_button, 1, 1)
+        action_layout.addWidget(self.solve_state_button, 2, 0, 1, 2)
+        layout.addWidget(actions)
+
+        self.log = QtWidgets.QPlainTextEdit()
+        self.log.setReadOnly(True)
+        self.log.setMaximumBlockCount(400)
+        self.log.setMinimumHeight(120)
+        layout.addWidget(self.log)
+        layout.addStretch(1)
+
+        self.state_spin.valueChanged.connect(self._state_changed)
+        self.create_mesh_button.clicked.connect(self._create_mesh)
+        self.check_button.clicked.connect(self.check_prerequisites_helper)
+        self.write_inp_button.clicked.connect(self.write_input_file_handler)
+        self.run_button.clicked.connect(self.runCalculix)
+        self.solve_state_button.clicked.connect(self._solve_state)
+        self.solve_previous_button.clicked.connect(self._previous_solve_state)
+        self.solve_next_button.clicked.connect(self._next_solve_state)
+        self.solve_slider.valueChanged.connect(self._set_solve_state)
+        self.solve_state_spin.valueChanged.connect(self._set_solve_state)
+        self.solve_start_state_spin.valueChanged.connect(self._refresh_solving_panel)
+        self.solve_end_state_spin.valueChanged.connect(self._refresh_solving_panel)
+        self.start_solving_button.clicked.connect(self._start_solving)
+        self.stop_solving_button.clicked.connect(self._stop_solving)
+        self._stop_solving_requested = False
+        self._configure_solving_panel()
+        self._refresh()
+
+    def _append_solving_panel(self, layout):
+        from PySide import QtCore, QtWidgets
+
+        solved_group = QtWidgets.QGroupBox("Solved")
+        solved_layout = QtWidgets.QVBoxLayout(solved_group)
+        self.solve_status_label = QtWidgets.QLabel()
+        self.solve_status_label.setWordWrap(True)
+        solved_layout.addWidget(self.solve_status_label)
+        layout.addWidget(solved_group)
+
+        current_group = QtWidgets.QGroupBox("Current State")
+        current_layout = QtWidgets.QVBoxLayout(current_group)
+        self.solve_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        current_layout.addWidget(self.solve_slider)
+
+        state_layout = QtWidgets.QHBoxLayout()
+        self.solve_previous_button = QtWidgets.QToolButton()
+        self.solve_previous_button.setText("<")
+        self.solve_previous_button.setToolTip("Previous state")
+        self.solve_next_button = QtWidgets.QToolButton()
+        self.solve_next_button.setText(">")
+        self.solve_next_button.setToolTip("Next state")
+        state_layout.addWidget(self.solve_previous_button)
+        state_layout.addWidget(QtWidgets.QLabel("State:"))
+        self.solve_state_spin = QtWidgets.QSpinBox()
+        state_layout.addWidget(self.solve_state_spin)
+        self.solve_state_count_label = QtWidgets.QLabel()
+        state_layout.addWidget(self.solve_state_count_label)
+        state_layout.addStretch()
+        state_layout.addWidget(QtWidgets.QLabel("Time:"))
+        self.solve_time_label = QtWidgets.QLabel()
+        state_layout.addWidget(self.solve_time_label)
+        state_layout.addWidget(self.solve_next_button)
+        current_layout.addLayout(state_layout)
+        layout.addWidget(current_group)
+
+        range_group = QtWidgets.QGroupBox("Solve Range")
+        range_layout = QtWidgets.QVBoxLayout(range_group)
+
+        start_layout = QtWidgets.QHBoxLayout()
+        start_layout.addWidget(QtWidgets.QLabel("Start State:"))
+        self.solve_start_state_spin = QtWidgets.QSpinBox()
+        start_layout.addWidget(self.solve_start_state_spin)
+        self.solve_start_state_count_label = QtWidgets.QLabel()
+        start_layout.addWidget(self.solve_start_state_count_label)
+        start_layout.addStretch()
+        start_layout.addWidget(QtWidgets.QLabel("Time:"))
+        self.solve_start_time_label = QtWidgets.QLabel()
+        start_layout.addWidget(self.solve_start_time_label)
+        range_layout.addLayout(start_layout)
+
+        end_layout = QtWidgets.QHBoxLayout()
+        end_layout.addWidget(QtWidgets.QLabel("End State:"))
+        self.solve_end_state_spin = QtWidgets.QSpinBox()
+        end_layout.addWidget(self.solve_end_state_spin)
+        self.solve_end_state_count_label = QtWidgets.QLabel()
+        end_layout.addWidget(self.solve_end_state_count_label)
+        end_layout.addStretch()
+        end_layout.addWidget(QtWidgets.QLabel("Time:"))
+        self.solve_end_time_label = QtWidgets.QLabel()
+        end_layout.addWidget(self.solve_end_time_label)
+        range_layout.addLayout(end_layout)
+        layout.addWidget(range_group)
+
+        solving_group = QtWidgets.QGroupBox("Solving")
+        solving_layout = QtWidgets.QHBoxLayout(solving_group)
+        self.start_solving_button = QtWidgets.QPushButton("Start Solving")
+        self.stop_solving_button = QtWidgets.QPushButton("Stop Solving")
+        solving_layout.addWidget(self.start_solving_button)
+        solving_layout.addWidget(self.stop_solving_button)
+        layout.addWidget(solving_group)
+
+    def getStandardButtons(self):
+        from PySide import QtGui
+
+        return QtGui.QDialogButtonBox.Close
 
     def reject(self):
         import FreeCADGui as Gui
 
-        Gui.ActiveDocument.resetEdit()
+        self._stop_solving()
+        try:
+            Gui.ActiveDocument.resetEdit()
+        except Exception:
+            pass
         Gui.Control.closeDialog()
         return True
 
-    def check_prerequisites_helper(self):
-        import time
+    def femConsoleMessage(self, message):
+        self.fem_console_message += str(message) + "\n"
+        self.log.appendPlainText(str(message))
 
+    def _state_changed(self, state_index):
+        self._set_fea_state_directory(state_index)
+        self.time_label.setText(_solver_state_time_text(self.fem_part, state_index))
+        self._refresh()
+
+    def _set_fea_state_directory(self, state_index):
+        import FreeCADMbDBackend
+
+        working_dir = FreeCADMbDBackend.default_calculix_working_dir(
+            self.fem_part,
+            state_index,
+        )
+        self.fea.setup_working_dir(str(working_dir), create=True)
+        self.fea.set_base_name(FreeCADMbDBackend.CALCULIX_BASE_NAME)
+
+    def _configure_solving_panel(self):
+        count = _solver_state_count(self.fem_part)
+        maximum = max(count - 1, 0)
+        self._updating_solving_panel = True
+        try:
+            self.solve_slider.setRange(0, maximum)
+            self.solve_state_spin.setRange(0, maximum)
+            self.solve_start_state_spin.setRange(0, maximum)
+            self.solve_end_state_spin.setRange(0, maximum)
+            self.solve_start_state_spin.setValue(0)
+            self.solve_end_state_spin.setValue(maximum)
+        finally:
+            self._updating_solving_panel = False
+
+        enabled = count > 0
+        for widget in (
+            self.solve_previous_button,
+            self.solve_next_button,
+            self.solve_slider,
+            self.solve_state_spin,
+            self.solve_start_state_spin,
+            self.solve_end_state_spin,
+            self.start_solving_button,
+        ):
+            widget.setEnabled(enabled)
+        self.stop_solving_button.setEnabled(False)
+        self._refresh_solving_panel()
+
+    def _refresh_solving_panel(self):
+        import FreeCADMbDFEMResultsPanel
+
+        count = _solver_state_count(self.fem_part)
+        maximum = max(count - 1, 0)
+        solved = len(
+            {
+                FreeCADMbDFEMResultsPanel._result_state_index(result, fallback)
+                for fallback, result in enumerate(_linked_results(self.fem_part))
+            }
+        )
+        if count == 0:
+            self.solve_status_label.setText("No MbDAssembly state series found.")
+        else:
+            self.solve_status_label.setText(
+                f"{self.fem_part.Label}: {solved} / {count} states solved"
+            )
+
+        self.solve_state_count_label.setText(f"/ {maximum}")
+        self.solve_start_state_count_label.setText(f"/ {maximum}")
+        self.solve_end_state_count_label.setText(f"/ {maximum}")
+        self.solve_time_label.setText(
+            _solver_state_time_text(self.fem_part, self.solve_state_spin.value())
+        )
+        self.solve_start_time_label.setText(
+            _solver_state_time_text(self.fem_part, self.solve_start_state_spin.value())
+        )
+        self.solve_end_time_label.setText(
+            _solver_state_time_text(self.fem_part, self.solve_end_state_spin.value())
+        )
+
+    def _set_solve_state(self, value):
+        if self._updating_solving_panel:
+            return
+        self._updating_solving_panel = True
+        try:
+            self.solve_slider.setValue(int(value))
+            self.solve_state_spin.setValue(int(value))
+            self.state_spin.setValue(int(value))
+        finally:
+            self._updating_solving_panel = False
+        self._refresh_solving_panel()
+
+    def _previous_solve_state(self):
+        self._set_solve_state(
+            max(self.solve_state_spin.value() - 1, self.solve_state_spin.minimum())
+        )
+
+    def _next_solve_state(self):
+        self._set_solve_state(
+            min(self.solve_state_spin.value() + 1, self.solve_state_spin.maximum())
+        )
+
+    def _solving_range_indices(self):
+        count = _solver_state_count(self.fem_part)
+        if count == 0:
+            return []
+        start = min(self.solve_start_state_spin.value(), self.solve_end_state_spin.value())
+        end = max(self.solve_start_state_spin.value(), self.solve_end_state_spin.value())
+        return list(range(start, end + 1))
+
+    def _stop_solving(self):
+        self._stop_solving_requested = True
+
+    def _refresh(self):
+        mesh = getattr(self.fem_part, "mesh", None)
+        material = _fem_part_material_object(self.fem_part, create=False)
+        ccx_binary = getattr(self.fea, "ccx_binary", "")
+        self.mesh_status.setText("Ready" if mesh is not None else "Missing")
+        self.material_status.setText("Ready" if material is not None else "Missing")
+        self.solver_status.setText(ccx_binary if ccx_binary else "Not found")
+        self.working_dir_edit.setText(str(getattr(self.fea, "working_dir", "")))
+        self.base_name_edit.setText(str(getattr(self.fea, "base_name", "")))
+        self._refresh_solving_panel()
+
+    def _create_mesh(self):
+        try:
+            import InitGui
+
+            InitGui.CreateFEMPartMeshCommand().createMesh(self.fem_part)
+            self.fem_part.Document.recompute()
+            self.femConsoleMessage("Mesh created.")
+        except Exception as exc:
+            self.femConsoleMessage(f"Mesh creation failed: {exc}")
+        self._refresh()
+
+    def write_input_file_handler(self):
+        try:
+            self.fea.update_objects()
+            self.fea.write_inp_file()
+            self.femConsoleMessage(f"Wrote input file: {self.fea.inp_file_name}")
+        except Exception as exc:
+            self.femConsoleMessage(f"Write .inp failed: {exc}")
+            return
+        constraint_nodes = getattr(self.fea, "auto_321_constraint_nodes", None)
+        if self.fea.inp_file_name and constraint_nodes:
+            for line in _format_321_constraint_feedback(constraint_nodes):
+                self.femConsoleMessage(line)
+
+    def check_prerequisites_helper(self):
         from PySide import QtGui
 
-        self.Start = time.time()
-        self.femConsoleMessage("Check dependencies...")
-        self.form.l_time.setText(f"Time: {time.time() - self.Start:4.1f}: ")
-
+        self.femConsoleMessage("Checking prerequisites...")
         self.fea.update_objects()
         message = _remove_auto_321_static_bc_message(
             self.fea.check_prerequisites(),
@@ -626,8 +1542,72 @@ class FEMPartSolverTaskPanel(task_solver_ccxtools._TaskPanel):
         )
         if message:
             QtGui.QMessageBox.critical(None, "Missing prerequisite(s)", message)
+            self.femConsoleMessage(message)
+            self._refresh()
             return False
+        self.femConsoleMessage("Prerequisites ready.")
+        self._refresh()
         return True
+
+    def runCalculix(self):
+        if not self.check_prerequisites_helper():
+            return False
+        try:
+            self.femConsoleMessage("Running CalculiX...")
+            result = self.fea.run()
+            self.femConsoleMessage("CalculiX run finished." if result else "CalculiX run failed.")
+            self._refresh()
+            return bool(result)
+        except Exception as exc:
+            self.femConsoleMessage(f"CalculiX run failed: {exc}")
+            self._refresh()
+            return False
+
+    def _solve_state(self):
+        try:
+            import FreeCADMbDFEMResultsPanel
+
+            state_index = self.state_spin.value()
+            result = FreeCADMbDFEMResultsPanel.solve_fem_part_state(self.fem_part, state_index)
+            self.femConsoleMessage(f"Solved state {state_index}: {result.Label}")
+        except Exception as exc:
+            self.femConsoleMessage(f"Solve state failed: {exc}")
+        self._refresh()
+
+    def _start_solving(self):
+        indices = self._solving_range_indices()
+        if not indices:
+            self.femConsoleMessage("No states in the selected range.")
+            return False
+
+        self._stop_solving_requested = False
+        self.start_solving_button.setEnabled(False)
+        self.stop_solving_button.setEnabled(True)
+        try:
+            from PySide import QtWidgets
+            import FreeCADMbDFEMResultsPanel
+
+            for state_index in indices:
+                if self._stop_solving_requested:
+                    self.femConsoleMessage("Solving stopped.")
+                    return False
+                self._set_solve_state(state_index)
+                self.femConsoleMessage(f"Solving state {state_index}...")
+                QtWidgets.QApplication.processEvents()
+                result = FreeCADMbDFEMResultsPanel.solve_fem_part_state(
+                    self.fem_part,
+                    state_index,
+                )
+                self.femConsoleMessage(f"Solved state {state_index}: {result.Label}")
+            self._refresh()
+            return True
+        except Exception as exc:
+            self.femConsoleMessage(f"Start solving failed: {exc}")
+            self._refresh()
+            return False
+        finally:
+            self.start_solving_button.setEnabled(_solver_state_count(self.fem_part) > 0)
+            self.stop_solving_button.setEnabled(False)
 
 
 def fem_part_for_solver(solver):
@@ -637,6 +1617,19 @@ def fem_part_for_solver(solver):
     for obj in getattr(document, "Objects", []):
         try:
             if obj.isDerivedFrom("MbDFEM::FEMPart") and getattr(obj, "solver", None) is solver:
+                return obj
+        except Exception:
+            pass
+    return None
+
+
+def fem_part_for_result(result):
+    document = getattr(result, "Document", None)
+    if document is None:
+        return None
+    for obj in getattr(document, "Objects", []):
+        try:
+            if obj.isDerivedFrom("MbDFEM::FEMPart") and result in _linked_results(obj):
                 return obj
         except Exception:
             pass
@@ -710,7 +1703,7 @@ def refresh_view_providers(document=None):
             if not is_fem_part:
                 continue
 
-            material = getattr(obj, "material", None)
+            material = _fem_part_material_object(obj, create=False)
             if material is not None and getattr(material, "ViewObject", None) is not None:
                 install_material_view_provider(material.ViewObject)
                 if getattr(material, "References", []):
@@ -719,6 +1712,31 @@ def refresh_view_providers(document=None):
             solver = getattr(obj, "solver", None)
             if solver is not None and getattr(solver, "ViewObject", None) is not None:
                 install_solver_view_provider(solver.ViewObject)
+
+            mesh = getattr(obj, "mesh", None)
+            if mesh is not None and mesh not in getattr(obj, "Group", []):
+                try:
+                    obj.addObject(mesh)
+                except Exception:
+                    pass
+
+            for result in _linked_results(obj):
+                result_mesh = getattr(result, "Mesh", None)
+                if result_mesh is not None:
+                    _hide_result_mesh(result_mesh)
+
+            try:
+                obj.synchronizeResultsFolder()
+            except Exception:
+                pass
+            visual = getattr(obj, "visual", None)
+            if visual is not None:
+                _hide_post_pipeline(visual)
+            if visual is not None and visual not in getattr(obj, "Group", []):
+                try:
+                    obj.addObject(visual)
+                except Exception:
+                    pass
 
 
 class FEMPartViewProviderObserver:
@@ -743,7 +1761,7 @@ class FEMPartViewProviderObserver:
         self._refresh(getattr(obj, "Document", None))
 
     def slotChangedObject(self, obj, prop):
-        if prop in {"material", "solver"}:
+        if prop in {"mbdItem", "solver", "results", "visual"}:
             self._refresh(getattr(obj, "Document", None))
 
 

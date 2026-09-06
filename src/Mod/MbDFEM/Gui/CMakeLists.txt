@@ -14,6 +14,8 @@ set(MbDFEMGui_SRCS
     ViewProviderFEMItem.h
     ViewProviderFEMPart.cpp
     ViewProviderFEMPart.h
+    ViewProviderFEMResultsFolder.cpp
+    ViewProviderFEMResultsFolder.h
     ViewProviderAxisTriad.cpp
     ViewProviderAxisTriad.h
     ViewProviderUtils.cpp

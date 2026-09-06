@@ -8,6 +8,7 @@
 #include "ViewProviderFEMAssembly.h"
 #include "ViewProviderFEMItem.h"
 #include "ViewProviderFEMPart.h"
+#include "ViewProviderFEMResultsFolder.h"
 #include "ViewProviderMbDAction.h"
 #include "ViewProviderMbDAnimationParameters.h"
 #include "ViewProviderMbDAssembly.h"
@@ -58,6 +59,7 @@ PyMOD_INIT_FUNC(MbDFEMGui)
     MbDFEMGui::ViewProviderFEMAssembly::init();
     MbDFEMGui::ViewProviderFEMItem::init();
     MbDFEMGui::ViewProviderFEMPart::init();
+    MbDFEMGui::ViewProviderFEMResultsFolder::init();
     MbDFEMGui::ViewProviderMbDAssembly::init();
     MbDFEMGui::ViewProviderMbDPart::init();
     MbDFEMGui::ViewProviderMbDMarker::init();

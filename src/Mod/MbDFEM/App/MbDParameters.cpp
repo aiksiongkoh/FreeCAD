@@ -31,7 +31,7 @@ MbDFEM::MbDSimulationParameters::MbDSimulationParameters()
                       App::Prop_None,
                       "Maximum simulation integration step size");
     ADD_PROPERTY_TYPE(significantDigits,
-                      (6),
+                      (4),
                       "MbDFEM",
                       App::Prop_None,
                       "Number of significant digits used for simulation accuracy");

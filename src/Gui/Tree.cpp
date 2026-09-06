@@ -83,6 +83,39 @@ FC_LOG_LEVEL_INIT("Tree", false, true, true)
 using namespace Gui;
 namespace sp = std::placeholders;
 
+namespace
+{
+
+void moveActionsAfterMbDFEMOtherMenu(QMenu& contextMenu)
+{
+    QAction* otherAction = nullptr;
+    for (QAction* action : contextMenu.actions()) {
+        if (action->property("MbDFEMOtherContextMenu").toBool()) {
+            otherAction = action;
+            break;
+        }
+    }
+
+    QMenu* otherMenu = otherAction ? otherAction->menu() : nullptr;
+    if (!otherMenu) {
+        return;
+    }
+
+    const QList<QAction*> actions = contextMenu.actions();
+    const qsizetype otherIndex = actions.indexOf(otherAction);
+    if (otherIndex < 0) {
+        return;
+    }
+
+    for (qsizetype index = otherIndex + 1; index < actions.size(); ++index) {
+        QAction* action = actions.at(index);
+        contextMenu.removeAction(action);
+        otherMenu->addAction(action);
+    }
+}
+
+}  // namespace
+
 /////////////////////////////////////////////////////////////////////////////////
 
 std::unique_ptr<QPixmap> TreeWidget::documentPixmap;
@@ -1375,6 +1408,8 @@ void TreeWidget::contextMenuEvent(QContextMenuEvent* e)
             header()->setVisible(action->isChecked() || internalNameAction->isChecked());
         }
     );
+
+    moveActionsAfterMbDFEMOtherMenu(contextMenu);
 
     if (!contextMenu.actions().isEmpty()) {
         try {

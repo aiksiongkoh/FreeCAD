@@ -22,7 +22,12 @@
 
 
 // clang-format off
+#include <Gui/PythonWrapper.h>
 #include "ViewProviderFemPostPipeline.h"
+#include "TaskPostBoxes.h"
+#ifdef FC_USE_VTK_PYTHON
+#include "TaskPostExtraction.h"
+#endif
 // inclusion of the generated files (generated out of ViewProviderFemPostPipelinePy.xml)
 #include "ViewProviderFemPostPipelinePy.h"
 #include "ViewProviderFemPostPipelinePy.cpp"
@@ -60,6 +65,63 @@ PyObject* ViewProviderFemPostPipelinePy::transformField(PyObject* args)
     this->getViewProviderFemPostPipelinePtr()->transformField(FieldName, FieldFactor);
 
     Py_Return;
+}
+
+PyObject* ViewProviderFemPostPipelinePy::createDisplayTaskWidget(PyObject* args)
+{
+    if (!PyArg_ParseTuple(args, "")) {
+        return nullptr;
+    }
+
+    auto panel = new TaskPostDisplay(getViewProviderFemPostPipelinePtr());
+
+    Gui::PythonWrapper wrap;
+    if (wrap.loadCoreModule()) {
+        return Py::new_reference_to(wrap.fromQWidget(panel));
+    }
+
+    PyErr_SetString(PyExc_TypeError, "creating the panel failed");
+    return nullptr;
+}
+
+PyObject* ViewProviderFemPostPipelinePy::createExtractionTaskWidget(PyObject* args)
+{
+#ifdef FC_USE_VTK_PYTHON
+    if (!PyArg_ParseTuple(args, "")) {
+        return nullptr;
+    }
+
+    auto panel = new TaskPostExtraction(getViewProviderFemPostPipelinePtr());
+
+    Gui::PythonWrapper wrap;
+    if (wrap.loadCoreModule()) {
+        return Py::new_reference_to(wrap.fromQWidget(panel));
+    }
+
+    PyErr_SetString(PyExc_TypeError, "creating the panel failed");
+    return nullptr;
+#else
+    (void)args;
+    PyErr_SetString(PyExc_NotImplementedError, "VTK python wrapper not available");
+    return nullptr;
+#endif
+}
+
+PyObject* ViewProviderFemPostPipelinePy::createFramesTaskWidget(PyObject* args)
+{
+    if (!PyArg_ParseTuple(args, "")) {
+        return nullptr;
+    }
+
+    auto panel = new TaskPostFrames(getViewProviderFemPostPipelinePtr());
+
+    Gui::PythonWrapper wrap;
+    if (wrap.loadCoreModule()) {
+        return Py::new_reference_to(wrap.fromQWidget(panel));
+    }
+
+    PyErr_SetString(PyExc_TypeError, "creating the panel failed");
+    return nullptr;
 }
 
 PyObject* ViewProviderFemPostPipelinePy::getCustomAttributes(const char* /*attr*/) const
