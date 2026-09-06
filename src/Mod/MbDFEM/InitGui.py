@@ -216,6 +216,7 @@ class EmbeddedFEMPartMaterialTaskPanel:
         from FreeCAD import Units
 
         self.obj = obj
+        self.read_only = True
         self._selectionWidget = None
         self.material = self.obj.Material
         self.uuid = self.obj.UUID
@@ -282,6 +283,7 @@ class EmbeddedFEMPartMaterialTaskPanel:
         )
 
         self.parameterWidget.chbu_allow_edit.setCheckState(QtCore.Qt.CheckState.Unchecked)
+        self.parameterWidget.chbu_allow_edit.setEnabled(False)
         self.toggleInputFieldsReadOnly()
 
         if self.obj.Category == "Fluid":
@@ -295,14 +297,7 @@ class EmbeddedFEMPartMaterialTaskPanel:
         self.set_mat_params_in_input_fields(self.material)
 
     def accept(self):
-        self.obj.Material = self.material
-        self.obj.UUID = self.uuid
-        self.obj.References = []
-        gui_doc = self.obj.ViewObject.Document
-        gui_doc.Document.recompute()
-        gui_doc.resetEdit()
-        gui_doc.Document.commitTransaction()
-        return True
+        return self.reject()
 
     def reject(self):
         gui_doc = self.obj.ViewObject.Document
@@ -327,7 +322,7 @@ class EmbeddedFEMPartMaterialTaskPanel:
             self.material_tree.setFilter(material_filter)
 
     def toggleInputFieldsReadOnly(self):
-        if self.parameterWidget.chbu_allow_edit.isChecked():
+        if not self.read_only and self.parameterWidget.chbu_allow_edit.isChecked():
             self.parameterWidget.qsb_density.setDisabled(False)
             self.parameterWidget.qsb_young_modulus.setDisabled(False)
             self.parameterWidget.qsb_poisson_ratio.setDisabled(False)
@@ -348,8 +343,9 @@ class EmbeddedFEMPartMaterialTaskPanel:
             self.parameterWidget.qsb_expansion_reference_temperature.setDisabled(True)
             self.parameterWidget.qsb_specific_heat.setDisabled(True)
             self.parameterWidget.qsb_kinematic_viscosity.setDisabled(True)
-            self.parameterWidget.wgt_material_tree.setEnabled(True)
-            self.set_from_editor(self.material_tree.UUID)
+            self.parameterWidget.wgt_material_tree.setEnabled(not self.read_only)
+            if not self.read_only:
+                self.set_from_editor(self.material_tree.UUID)
 
     def ym_changed(self):
         if self.parameterWidget.chbu_allow_edit.isChecked():
@@ -457,6 +453,8 @@ class EmbeddedFEMPartMaterialTaskPanel:
             self.parameterWidget.qsb_specific_heat.setProperty("rawValue", 0.0)
 
     def set_from_editor(self, value):
+        if self.read_only:
+            return
         if not value:
             return
         mat = self.material_manager.getMaterial(value)
@@ -488,6 +486,12 @@ class EmbeddedFEMPartMaterialTaskPanel:
                 "value"
             ).UserString
         self.material = material
+
+
+class EmbeddedFEMPartMaterialTaskPanel(FreeCADMbDFEMEmbedded.FEMPartMaterialTaskPanel):
+    """Read-only FEMPart material panel backed by the shared embedded implementation."""
+
+    pass
 
 
 class EmbeddedFEMPartMaterialViewProvider:
@@ -623,7 +627,7 @@ class EmbeddedFEMPartViewProviderObserver:
         self._refresh(getattr(obj, "Document", None))
 
     def slotChangedObject(self, obj, prop):
-        if prop in {"material", "solver"}:
+        if prop in {"mbdItem", "solver", "results", "visual"}:
             self._refresh(getattr(obj, "Document", None))
 
 
@@ -709,6 +713,99 @@ def _active_top_level_mbd_assembly():
             return assembly
 
     return assemblies[0] if assemblies else None
+
+
+def _remove_from_owner_groups(object_):
+    for owner in list(getattr(object_, "InList", [])):
+        try:
+            if hasattr(owner, "removeObject"):
+                owner.removeObject(object_)
+        except Exception:
+            pass
+
+
+def _shape_copy(source_part):
+    import FreeCAD as App
+
+    try:
+        shape = source_part.Shape
+    except Exception:
+        return None
+
+    if shape is None:
+        return None
+    try:
+        if shape.isNull():
+            return None
+    except Exception:
+        pass
+    try:
+        shape = shape.copy()
+    except Exception:
+        pass
+    try:
+        shape.Placement = App.Placement()
+    except Exception:
+        pass
+    return shape
+
+
+def _make_mesh_shape_proxy(fem_part):
+    document = fem_part.Document
+    shape = _shape_copy(fem_part)
+    if shape is None:
+        raise ValueError("Selected FEMPart has no shape to mesh")
+
+    shape_proxy = document.addObject("Part::Feature", fem_part.Name + "_MeshShape")
+    shape_proxy.Label = f"Mesh Shape ({fem_part.Label})"
+    shape_proxy.Shape = shape
+    try:
+        shape_proxy.ViewObject.Visibility = False
+    except Exception:
+        pass
+    try:
+        shape_proxy.ViewObject.ShowInTree = False
+    except Exception:
+        pass
+    _remove_from_owner_groups(shape_proxy)
+    return shape_proxy
+
+
+def _hide_mesh_shape(mesh):
+    shape = getattr(mesh, "Shape", None)
+    view_object = getattr(shape, "ViewObject", None)
+    if view_object is None:
+        return
+    try:
+        view_object.Visibility = False
+    except Exception:
+        pass
+    try:
+        view_object.ShowInTree = False
+    except Exception:
+        pass
+
+
+def _create_fem_part_mesh(fem_part):
+    import FreeCAD as App
+    import ObjectsFem
+    from femmesh import gmshtools
+
+    shape_proxy = _make_mesh_shape_proxy(fem_part)
+    mesh = ObjectsFem.makeMeshGmsh(fem_part.Document, fem_part.Name + "_Mesh")
+    mesh.Label = f"Mesh ({fem_part.Label})"
+    mesh.Shape = shape_proxy
+    mesh.ElementOrder = "2nd"
+    mesh.SecondOrderLinear = False
+    _remove_from_owner_groups(mesh)
+    mesh.Placement = App.Placement()
+    fem_part.mesh = mesh
+    fem_part.addObject(mesh)
+    gmsh_error = gmshtools.GmshTools(mesh).create_mesh()
+    _hide_mesh_shape(mesh)
+    if gmsh_error:
+        App.Console.PrintError(f"MbDFEM Create Mesh: Gmsh failed: {gmsh_error}\n")
+    return mesh
 
 
 class CreateFEMAssemblyCommand:
@@ -902,32 +999,9 @@ class CreateFEMAssemblyCommand:
         return fem_items
 
     def _make_fem_part_material(self, fem_part, mbd_part):
-        import ObjectsFem
         import FreeCADMbDFEMEmbedded
 
-        material = ObjectsFem.makeMaterialSolid(fem_part.Document, fem_part.Name + "_Material")
-        material.Label = f"Material ({fem_part.Label})"
-        try:
-            FreeCADMbDFEMEmbedded.install_material_view_provider(material.ViewObject)
-        except Exception:
-            pass
-        try:
-            mass_marker = mbd_part.getMassMarker()
-        except Exception:
-            mass_marker = None
-        if mass_marker is not None:
-            try:
-                material.Material = mass_marker.material
-            except Exception:
-                pass
-
-        self._remove_from_owner_groups(material)
-        try:
-            fem_part.addObject(material)
-        except Exception:
-            pass
-        fem_part.material = material
-        return material
+        return FreeCADMbDFEMEmbedded._fem_part_material_object(fem_part)
 
     def _make_fem_part_solver(self, fem_part):
         import ObjectsFem
@@ -946,6 +1020,75 @@ class CreateFEMAssemblyCommand:
             pass
         fem_part.solver = solver
         return solver
+
+    @staticmethod
+    def _create_fem_part_mesh(fem_part):
+        import FreeCAD as App
+        import ObjectsFem
+        from femmesh import gmshtools
+
+        def remove_from_owner_groups(object_):
+            for owner in list(getattr(object_, "InList", [])):
+                try:
+                    if hasattr(owner, "removeObject"):
+                        owner.removeObject(object_)
+                except Exception:
+                    pass
+
+        try:
+            shape = fem_part.Shape
+        except Exception:
+            shape = None
+        if shape is None:
+            raise ValueError("Selected FEMPart has no shape to mesh")
+        try:
+            if shape.isNull():
+                raise ValueError("Selected FEMPart has no shape to mesh")
+        except AttributeError:
+            pass
+        try:
+            shape = shape.copy()
+        except Exception:
+            pass
+        try:
+            shape.Placement = App.Placement()
+        except Exception:
+            pass
+
+        shape_proxy = fem_part.Document.addObject("Part::Feature", fem_part.Name + "_MeshShape")
+        shape_proxy.Label = f"Mesh Shape ({fem_part.Label})"
+        shape_proxy.Shape = shape
+        try:
+            shape_proxy.ViewObject.Visibility = False
+        except Exception:
+            pass
+        try:
+            shape_proxy.ViewObject.ShowInTree = False
+        except Exception:
+            pass
+        remove_from_owner_groups(shape_proxy)
+
+        mesh = ObjectsFem.makeMeshGmsh(fem_part.Document, fem_part.Name + "_Mesh")
+        mesh.Label = f"Mesh ({fem_part.Label})"
+        mesh.Shape = shape_proxy
+        mesh.ElementOrder = "2nd"
+        mesh.SecondOrderLinear = False
+        remove_from_owner_groups(mesh)
+        mesh.Placement = App.Placement()
+        fem_part.mesh = mesh
+        fem_part.addObject(mesh)
+        gmsh_error = gmshtools.GmshTools(mesh).create_mesh()
+        try:
+            shape_proxy.ViewObject.Visibility = False
+        except Exception:
+            pass
+        try:
+            shape_proxy.ViewObject.ShowInTree = False
+        except Exception:
+            pass
+        if gmsh_error:
+            App.Console.PrintError(f"MbDFEM Create Mesh: Gmsh failed: {gmsh_error}\n")
+        return mesh
 
     def _populate_fem_parts(self, fem_assembly, mbd_assembly, parts_folder):
         fem_parts = self._populate_fem_items(
@@ -966,6 +1109,14 @@ class CreateFEMAssemblyCommand:
             except Exception:
                 pass
             self._make_fem_part_material(fem_part, mbd_part)
+            try:
+                self._create_fem_part_mesh(fem_part)
+            except Exception as exc:
+                import FreeCAD as App
+
+                App.Console.PrintWarning(
+                    f"MbDFEM: FEMPart mesh creation skipped for {fem_part.Label}: {exc}\n"
+                )
             self._make_fem_part_solver(fem_part)
         return fem_parts
 
@@ -1020,8 +1171,17 @@ class CreateFEMAssemblyCommand:
         for delay in (0, 100, 300, 700, 1200):
             QtCore.QTimer.singleShot(
                 delay,
-                lambda objects=objects, report=(delay == 0): cls._expand_tree_objects(objects, report),
+                lambda objects=objects, report=(delay == 0): cls._reshow_and_expand_tree_objects(
+                    objects,
+                    report,
+                ),
             )
+
+    @classmethod
+    def _reshow_and_expand_tree_objects(cls, objects, report=False):
+        for object_ in objects:
+            cls._show_tree_container(object_)
+        cls._expand_tree_objects(objects, report)
 
     def Activated(self):
         import FreeCAD as App
@@ -1050,6 +1210,9 @@ class CreateFEMAssemblyCommand:
             import FreeCADMbDFEMEmbedded
 
             FreeCADMbDFEMEmbedded.refresh_view_providers(document)
+            self._show_tree_container(fem_assembly)
+            for folder in folders:
+                self._show_tree_container(folder)
             if active_view is not None and active_part is not None:
                 active_view.setActiveObject("part", active_part)
             document.commitTransaction()
@@ -1063,6 +1226,17 @@ class CreateFEMAssemblyCommand:
         Gui.Selection.clearSelection()
         Gui.Selection.addSelection(fem_assembly)
         self._expand_fem_assembly_tree(fem_assembly, folders)
+
+    @staticmethod
+    def _show_tree_container(object_):
+        try:
+            object_.Visibility = True
+        except Exception:
+            pass
+        try:
+            object_.ViewObject.Visibility = True
+        except Exception:
+            pass
 
 
 Gui.addCommand("MbDFEM_CreateFEMAssembly", CreateFEMAssemblyCommand())
@@ -1114,73 +1288,18 @@ class CreateFEMPartMeshCommand:
 
     @staticmethod
     def _remove_from_owner_groups(object_):
-        for owner in list(getattr(object_, "InList", [])):
-            try:
-                if hasattr(owner, "removeObject"):
-                    owner.removeObject(object_)
-            except Exception:
-                pass
+        _remove_from_owner_groups(object_)
 
     @staticmethod
     def _shape_copy(source_part):
-        import FreeCAD as App
-
-        try:
-            shape = source_part.Shape
-        except Exception:
-            return None
-
-        if shape is None:
-            return None
-        try:
-            if shape.isNull():
-                return None
-        except Exception:
-            pass
-        try:
-            shape = shape.copy()
-        except Exception:
-            pass
-        try:
-            shape.Placement = App.Placement()
-        except Exception:
-            pass
-        return shape
+        return _shape_copy(source_part)
 
     def _make_mesh_shape_proxy(self, fem_part):
-        document = fem_part.Document
-        shape = self._shape_copy(fem_part)
-        if shape is None:
-            raise ValueError("Selected FEMPart has no shape to mesh")
-
-        shape_proxy = document.addObject("Part::Feature", fem_part.Name + "_MeshShape")
-        shape_proxy.Label = f"Mesh Shape ({fem_part.Label})"
-        shape_proxy.Shape = shape
-        try:
-            shape_proxy.ViewObject.Visibility = False
-        except Exception:
-            pass
-        try:
-            shape_proxy.ViewObject.ShowInTree = False
-        except Exception:
-            pass
-        self._remove_from_owner_groups(shape_proxy)
-        return shape_proxy
+        return _make_mesh_shape_proxy(fem_part)
 
     @staticmethod
     def _hide_mesh_shape(mesh):
-        shape = getattr(mesh, "Shape", None)
-        view_object = getattr(shape, "ViewObject", None)
-        if view_object is None:
-            return
-        try:
-            view_object.Visibility = False
-        except Exception:
-            pass
-        try:
-            view_object.ShowInTree = False
-        except Exception:
-            pass
+        _hide_mesh_shape(mesh)
 
     @staticmethod
     def _expand_mesh_tree_item(mesh):
@@ -1199,11 +1318,12 @@ class CreateFEMPartMeshCommand:
         except Exception:
             pass
 
+    def createMesh(self, fem_part):
+        return _create_fem_part_mesh(fem_part)
+
     def Activated(self):
         import FreeCAD as App
         import FreeCADGui as Gui
-        import ObjectsFem
-        from femmesh import gmshtools
 
         fem_part = self.selectedFEMPart()
         if fem_part is None:
@@ -1213,19 +1333,7 @@ class CreateFEMPartMeshCommand:
         document = fem_part.Document
         document.openTransaction("Create FEMPart Mesh")
         try:
-            shape_proxy = self._make_mesh_shape_proxy(fem_part)
-            mesh = ObjectsFem.makeMeshGmsh(document, fem_part.Name + "_Mesh")
-            mesh.Label = f"Mesh ({fem_part.Label})"
-            mesh.Shape = shape_proxy
-            mesh.ElementOrder = "2nd"
-            mesh.SecondOrderLinear = False
-            self._remove_from_owner_groups(mesh)
-            mesh.Placement = App.Placement()
-            fem_part.mesh = mesh
-            gmsh_error = gmshtools.GmshTools(mesh).create_mesh()
-            self._hide_mesh_shape(mesh)
-            if gmsh_error:
-                App.Console.PrintError(f"MbDFEM Create Mesh: Gmsh failed: {gmsh_error}\n")
+            mesh = self.createMesh(fem_part)
             document.commitTransaction()
         except Exception:
             document.abortTransaction()

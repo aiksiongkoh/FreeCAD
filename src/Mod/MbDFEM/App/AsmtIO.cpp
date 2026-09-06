@@ -110,6 +110,16 @@ std::vector<double> positionValues(const Base::Placement& placement)
     return {pos.x * lengthScale, pos.y * lengthScale, pos.z * lengthScale};
 }
 
+std::vector<double> velocityValues(const Base::Vector3d& velocity)
+{
+    return {velocity.x * lengthScale, velocity.y * lengthScale, velocity.z * lengthScale};
+}
+
+std::vector<double> vectorValues(const Base::Vector3d& vector)
+{
+    return {vector.x, vector.y, vector.z};
+}
+
 std::array<std::vector<double>, 3> rotationRows(const Base::Placement& placement)
 {
     const auto matrix = placement.toMatrix();
@@ -140,6 +150,17 @@ void writeSpatialKinematics(Writer& writer, int level, const App::DocumentObject
     writer.vector(level + 1, {0.0, 0.0, 0.0});
     writer.line(level, "Omega3D");
     writer.vector(level + 1, {0.0, 0.0, 0.0});
+}
+
+void writePartKinematics(Writer& writer, int level, const MbDFEM::MbDPart* part)
+{
+    writeSpatialItem(writer, level, part);
+    writer.line(level, "Velocity3D");
+    writer.vector(level + 1, part ? velocityValues(part->velocity.getValue())
+                                  : std::vector<double> {0.0, 0.0, 0.0});
+    writer.line(level, "Omega3D");
+    writer.vector(level + 1, part ? vectorValues(part->omega.getValue())
+                                  : std::vector<double> {0.0, 0.0, 0.0});
 }
 
 void writeAssemblyKinematics(Writer& writer, int level)
@@ -248,7 +269,7 @@ void writePart(Writer& writer, int level, MbDFEM::MbDPart* part)
 {
     writer.line(level, "Part");
     writer.keyValue(level + 1, "Name", safeName(part));
-    writeSpatialKinematics(writer, level + 1, part);
+    writePartKinematics(writer, level + 1, part);
     writer.line(level + 1, "FeatureOrder");
     writePrincipalMassMarker(writer, level + 1, part);
     writeReferences(writer, level + 1, markerRefs(part));

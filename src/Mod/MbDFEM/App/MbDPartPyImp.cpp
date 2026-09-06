@@ -4,6 +4,7 @@
 #include "MbDPartPy.cpp"
 
 #include <App/DocumentObjectPy.h>
+#include <Base/VectorPy.h>
 
 #include "MbDMassMarker.h"
 #include "MbDMarker.h"
@@ -111,4 +112,37 @@ PyObject* MbDFEM::MbDPartPy::populateMassMarkerFromShape(PyObject* args)
     }
 
     return Py::new_reference_to(Py::asObject(marker->getPyObject()));
+}
+
+PyObject* MbDFEM::MbDPartPy::globalPositionOf(PyObject* args)
+{
+    PyObject* pointObject;
+    if (!PyArg_ParseTuple(args, "O!", &Base::VectorPy::Type, &pointObject)) {
+        return nullptr;
+    }
+
+    const Base::Vector3d point = static_cast<Base::VectorPy*>(pointObject)->value();
+    return new Base::VectorPy(getMbDPartPtr()->globalPositionOf(point));
+}
+
+PyObject* MbDFEM::MbDPartPy::globalVelocityOf(PyObject* args)
+{
+    PyObject* pointObject;
+    if (!PyArg_ParseTuple(args, "O!", &Base::VectorPy::Type, &pointObject)) {
+        return nullptr;
+    }
+
+    const Base::Vector3d point = static_cast<Base::VectorPy*>(pointObject)->value();
+    return new Base::VectorPy(getMbDPartPtr()->globalVelocityOf(point));
+}
+
+PyObject* MbDFEM::MbDPartPy::globalAccelerationOf(PyObject* args)
+{
+    PyObject* pointObject;
+    if (!PyArg_ParseTuple(args, "O!", &Base::VectorPy::Type, &pointObject)) {
+        return nullptr;
+    }
+
+    const Base::Vector3d point = static_cast<Base::VectorPy*>(pointObject)->value();
+    return new Base::VectorPy(getMbDPartPtr()->globalAccelerationOf(point));
 }

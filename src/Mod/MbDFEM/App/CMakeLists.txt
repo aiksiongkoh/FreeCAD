@@ -1,11 +1,13 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
 set(MbDFEM_LIBS
+    Fem
     FreeCADApp
     Materials
     Part
 )
 
+generate_from_py(FEMPart)
 generate_from_py(MbDAssembly)
 generate_from_py(MbDItemIJ)
 generate_from_py(MbDPart)
@@ -23,8 +25,12 @@ set(MbDFEM_SRCS
     FEMItem.h
     FEMJoint.cpp
     FEMJoint.h
+    FEMMeshUtils.cpp
+    FEMMeshUtils.h
     FEMPart.cpp
     FEMPart.h
+    FEMPart.pyi
+    FEMPartPyImp.cpp
     MbDAction.cpp
     MbDAction.h
     MbDAssembly.cpp

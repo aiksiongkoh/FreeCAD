@@ -6,6 +6,8 @@
 
 #include <App/Document.h>
 #include <App/GroupExtension.h>
+#include <Base/Tools.h>
+#include <Mod/Fem/App/FemResultObject.h>
 
 #include "MbDAction.h"
 #include "MbDAssembly.h"
@@ -27,6 +29,7 @@ PROPERTY_SOURCE(MbDFEM::MbDJointsFolder, App::DocumentObjectGroup)
 PROPERTY_SOURCE(MbDFEM::MbDMotionsFolder, App::DocumentObjectGroup)
 PROPERTY_SOURCE(MbDFEM::MbDActionsFolder, App::DocumentObjectGroup)
 PROPERTY_SOURCE(MbDFEM::FEMPartsFolder, App::DocumentObjectGroup)
+PROPERTY_SOURCE(MbDFEM::FEMResultsFolder, App::DocumentObjectGroup)
 PROPERTY_SOURCE(MbDFEM::FEMJointsFolder, App::DocumentObjectGroup)
 PROPERTY_SOURCE(MbDFEM::FEMMotionsFolder, App::DocumentObjectGroup)
 PROPERTY_SOURCE(MbDFEM::FEMActionsFolder, App::DocumentObjectGroup)
@@ -75,6 +78,20 @@ MbDFEM::FEMAssembly* owningFEMAssembly(App::DocumentObjectGroup* folder)
         if (assembly->getPartsFolder() == folder || assembly->getJointsFolder() == folder
             || assembly->getMotionsFolder() == folder || assembly->getActionsFolder() == folder) {
             return assembly;
+        }
+    }
+    return nullptr;
+}
+
+MbDFEM::FEMPart* owningFEMPart(App::DocumentObjectGroup* folder)
+{
+    if (!folder || !folder->getDocument()) {
+        return nullptr;
+    }
+
+    for (auto* part : folder->getDocument()->getObjectsOfType<MbDFEM::FEMPart>()) {
+        if (part->getResultsFolder() == folder) {
+            return part;
         }
     }
     return nullptr;
@@ -167,7 +184,65 @@ void synchronizeFEMFolder(FolderT* folder,
     }
 }
 
+void synchronizeFEMResultsFolder(MbDFEM::FEMResultsFolder* folder, const App::Property* prop)
+{
+    if (!folder || prop != &folder->Group || folder->Group.testStatus(App::Property::User3)) {
+        return;
+    }
+
+    auto* part = owningFEMPart(folder);
+    if (!part) {
+        return;
+    }
+
+    Base::ObjectStatusLocker<App::Property::Status, App::Property> guard(App::Property::User3,
+                                                                         &part->results);
+    part->results.setValues(folder->Group.getValues());
+}
+
+int setFEMAssemblyFolderElementVisible(App::DocumentObjectGroup* folder,
+                                       const char* element,
+                                       bool visible)
+{
+    if (auto* assembly = owningFEMAssembly(folder)) {
+        return assembly->setElementVisible(element, visible);
+    }
+    return folder ? folder->App::DocumentObjectGroup::setElementVisible(element, visible) : -1;
+}
+
+int isFEMAssemblyFolderElementVisible(const App::DocumentObjectGroup* folder, const char* element)
+{
+    auto* mutableFolder = const_cast<App::DocumentObjectGroup*>(folder);
+    if (auto* assembly = owningFEMAssembly(mutableFolder)) {
+        return assembly->isElementVisible(element);
+    }
+    return folder ? folder->App::DocumentObjectGroup::isElementVisible(element) : -1;
+}
+
+int setFEMResultsFolderElementVisible(MbDFEM::FEMResultsFolder* folder,
+                                      const char* element,
+                                      bool visible)
+{
+    if (auto* part = owningFEMPart(folder)) {
+        return part->setElementVisible(element, visible);
+    }
+    return folder ? folder->App::DocumentObjectGroup::setElementVisible(element, visible) : -1;
+}
+
+int isFEMResultsFolderElementVisible(const MbDFEM::FEMResultsFolder* folder, const char* element)
+{
+    auto* mutableFolder = const_cast<MbDFEM::FEMResultsFolder*>(folder);
+    if (auto* part = owningFEMPart(mutableFolder)) {
+        return part->isElementVisible(element);
+    }
+    return folder ? folder->App::DocumentObjectGroup::isElementVisible(element) : -1;
+}
 }  // namespace
+
+MbDFEM::FEMResultsFolder::FEMResultsFolder()
+{
+    Group.setScope(App::LinkScope::Child);
+}
 
 bool MbDFEM::MbDAssembliesFolder::allowObject(App::DocumentObject* object)
 {
@@ -339,10 +414,66 @@ bool MbDFEM::FEMPartsFolder::redirectSubName(std::ostringstream& ss,
     return omitFolderFromSubName(ss, topParent, child);
 }
 
+int MbDFEM::FEMPartsFolder::setElementVisible(const char* element, bool visible)
+{
+    return setFEMAssemblyFolderElementVisible(this, element, visible);
+}
+
+int MbDFEM::FEMPartsFolder::isElementVisible(const char* element) const
+{
+    return isFEMAssemblyFolderElementVisible(this, element);
+}
+
 void MbDFEM::FEMPartsFolder::onChanged(const App::Property* prop)
 {
     App::DocumentObjectGroup::onChanged(prop);
     synchronizeFEMFolder(this, &FEMAssembly::parts, prop);
+}
+
+bool MbDFEM::FEMResultsFolder::allowObject(App::DocumentObject* object)
+{
+    return object && object->isDerivedFrom<Fem::FemResultObject>();
+}
+
+std::vector<App::DocumentObject*> MbDFEM::FEMResultsFolder::addObject(App::DocumentObject* object)
+{
+    auto added = App::DocumentObjectGroup::addObject(object);
+    if (auto* part = owningFEMPart(this)) {
+        appendUnique(part->results, object);
+    }
+    return added;
+}
+
+std::vector<App::DocumentObject*> MbDFEM::FEMResultsFolder::removeObject(App::DocumentObject* object)
+{
+    auto removed = App::DocumentObjectGroup::removeObject(object);
+    if (auto* part = owningFEMPart(this)) {
+        removeAll(part->results, object);
+    }
+    return removed;
+}
+
+bool MbDFEM::FEMResultsFolder::redirectSubName(std::ostringstream& ss,
+                                               App::DocumentObject* topParent,
+                                               App::DocumentObject* child) const
+{
+    return omitFolderFromSubName(ss, topParent, child);
+}
+
+int MbDFEM::FEMResultsFolder::setElementVisible(const char* element, bool visible)
+{
+    return setFEMResultsFolderElementVisible(this, element, visible);
+}
+
+int MbDFEM::FEMResultsFolder::isElementVisible(const char* element) const
+{
+    return isFEMResultsFolderElementVisible(this, element);
+}
+
+void MbDFEM::FEMResultsFolder::onChanged(const App::Property* prop)
+{
+    App::DocumentObjectGroup::onChanged(prop);
+    synchronizeFEMResultsFolder(this, prop);
 }
 
 bool MbDFEM::FEMJointsFolder::allowObject(App::DocumentObject* object)
@@ -365,6 +496,16 @@ bool MbDFEM::FEMJointsFolder::redirectSubName(std::ostringstream& ss,
                                               App::DocumentObject* child) const
 {
     return omitFolderFromSubName(ss, topParent, child);
+}
+
+int MbDFEM::FEMJointsFolder::setElementVisible(const char* element, bool visible)
+{
+    return setFEMAssemblyFolderElementVisible(this, element, visible);
+}
+
+int MbDFEM::FEMJointsFolder::isElementVisible(const char* element) const
+{
+    return isFEMAssemblyFolderElementVisible(this, element);
 }
 
 void MbDFEM::FEMJointsFolder::onChanged(const App::Property* prop)
@@ -395,6 +536,16 @@ bool MbDFEM::FEMMotionsFolder::redirectSubName(std::ostringstream& ss,
     return omitFolderFromSubName(ss, topParent, child);
 }
 
+int MbDFEM::FEMMotionsFolder::setElementVisible(const char* element, bool visible)
+{
+    return setFEMAssemblyFolderElementVisible(this, element, visible);
+}
+
+int MbDFEM::FEMMotionsFolder::isElementVisible(const char* element) const
+{
+    return isFEMAssemblyFolderElementVisible(this, element);
+}
+
 void MbDFEM::FEMMotionsFolder::onChanged(const App::Property* prop)
 {
     App::DocumentObjectGroup::onChanged(prop);
@@ -421,6 +572,16 @@ bool MbDFEM::FEMActionsFolder::redirectSubName(std::ostringstream& ss,
                                                App::DocumentObject* child) const
 {
     return omitFolderFromSubName(ss, topParent, child);
+}
+
+int MbDFEM::FEMActionsFolder::setElementVisible(const char* element, bool visible)
+{
+    return setFEMAssemblyFolderElementVisible(this, element, visible);
+}
+
+int MbDFEM::FEMActionsFolder::isElementVisible(const char* element) const
+{
+    return isFEMAssemblyFolderElementVisible(this, element);
 }
 
 void MbDFEM::FEMActionsFolder::onChanged(const App::Property* prop)

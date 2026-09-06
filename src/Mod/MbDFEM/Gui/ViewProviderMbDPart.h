@@ -31,6 +31,7 @@ public:
                        bool append,
                        SoDetail*& det) const override;
     bool getElementPicked(const SoPickedPoint* pp, std::string& subname) const override;
+    bool doubleClicked() override;
     void setupContextMenu(QMenu* menu, QObject* receiver, const char* member) override;
 
 protected:

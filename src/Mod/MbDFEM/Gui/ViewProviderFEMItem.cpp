@@ -49,9 +49,6 @@ std::vector<App::DocumentObject*> ViewProviderFEMItem::claimChildren() const
     auto* part = getObject<MbDFEM::FEMPart>();
     if (part) {
         std::vector<App::DocumentObject*> children;
-        if (auto* material = part->material.getValue()) {
-            children.push_back(material);
-        }
         if (auto* mesh = part->mesh.getValue()) {
             children.push_back(mesh);
         }

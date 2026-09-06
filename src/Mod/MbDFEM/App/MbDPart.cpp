@@ -213,6 +213,26 @@ MbDFEM::MbDPart::MbDPart()
                       App::Prop_Hidden,
                       "Tree folder containing this part's markers");
     _markersFolder.setScope(App::LinkScope::Hidden);
+    ADD_PROPERTY_TYPE(velocity,
+                      (Base::Vector3d()),
+                      "MbDFEM",
+                      App::Prop_None,
+                      "Part origin velocity in global coordinates");
+    ADD_PROPERTY_TYPE(omega,
+                      (Base::Vector3d()),
+                      "MbDFEM",
+                      App::Prop_None,
+                      "Part angular velocity in global coordinates");
+    ADD_PROPERTY_TYPE(acceleration,
+                      (Base::Vector3d()),
+                      "MbDFEM",
+                      App::Prop_None,
+                      "Part origin acceleration in global coordinates");
+    ADD_PROPERTY_TYPE(alpha,
+                      (Base::Vector3d()),
+                      "MbDFEM",
+                      App::Prop_None,
+                      "Part angular acceleration in global coordinates");
     ADD_PROPERTY_TYPE(xs, (), "MbDFEM Results", App::Prop_None, "Solved X position values");
     ADD_PROPERTY_TYPE(ys, (), "MbDFEM Results", App::Prop_None, "Solved Y position values");
     ADD_PROPERTY_TYPE(zs, (), "MbDFEM Results", App::Prop_None, "Solved Z position values");
@@ -306,6 +326,29 @@ MbDFEM::MbDMassMarker* MbDFEM::MbDPart::populateMassMarkerFromShape()
     marker->massMarkerFromShape.setValue(true);
     marker->purgeTouched();
     return marker;
+}
+
+Base::Vector3d MbDFEM::MbDPart::globalPositionOf(const Base::Vector3d& point) const
+{
+    Base::Vector3d result;
+    globalPlacement().multVec(point, result);
+    return result;
+}
+
+Base::Vector3d MbDFEM::MbDPart::globalVelocityOf(const Base::Vector3d& point) const
+{
+    Base::Vector3d radius;
+    globalPlacement().getRotation().multVec(point, radius);
+    return velocity.getValue() + omega.getValue().Cross(radius);
+}
+
+Base::Vector3d MbDFEM::MbDPart::globalAccelerationOf(const Base::Vector3d& point) const
+{
+    Base::Vector3d radius;
+    globalPlacement().getRotation().multVec(point, radius);
+    const Base::Vector3d angularVelocity = omega.getValue();
+    return acceleration.getValue() + alpha.getValue().Cross(radius)
+        + angularVelocity.Cross(angularVelocity.Cross(radius));
 }
 
 int MbDFEM::MbDPart::setElementVisible(const char* element, bool visible)

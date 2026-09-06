@@ -179,6 +179,11 @@ class SimulationTaskPanel:
             if not self._apply_parameters():
                 return False
             asmt_path = Path(self.asmt_file.text())
+            if not self._confirm_warning(
+                FreeCADMbDBackend.asmt_freshness_warning(self.assembly.Document, asmt_path),
+                "Stale ASMT Input",
+            ):
+                return False
             solved_path = Path(self.solved_asmt_file.text())
             backend = FreeCADMbDBackend.FreeCADMbDProcessBackend()
             solved_path, completed = backend.simulate_asmt(asmt_path, solved_path)
@@ -195,6 +200,7 @@ class SimulationTaskPanel:
             return False
 
     def import_asmt(self):
+        import FreeCADMbDBackend
         import FreeCADMbDResults
         from pathlib import Path
 
@@ -202,6 +208,11 @@ class SimulationTaskPanel:
             if not self._apply_parameters():
                 return False
             solved_path = Path(self.solved_asmt_file.text())
+            if not self._confirm_warning(
+                FreeCADMbDBackend.asmt_freshness_warning(self.assembly.Document, solved_path),
+                "Stale Solved ASMT Input",
+            ):
+                return False
             imported = FreeCADMbDResults.import_results(self.assembly, solved_path)
             self._set_status(f"Imported ASMT results: {solved_path}")
             App.Console.PrintMessage(f"Imported FreeCADMbD results from: {solved_path}\n")
@@ -261,6 +272,20 @@ class SimulationTaskPanel:
         message = f"{action}: {exc}"
         self.status_label.setText(message)
         App.Console.PrintError(message + "\n")
+
+    def _confirm_warning(self, message, title):
+        if not message:
+            return True
+
+        App.Console.PrintWarning(message + "\n")
+        if not App.GuiUp:
+            return True
+
+        from PySide import QtGui
+
+        buttons = QtGui.QMessageBox.Ok | QtGui.QMessageBox.Cancel
+        response = QtGui.QMessageBox.warning(None, title, message, buttons, QtGui.QMessageBox.Cancel)
+        return response == QtGui.QMessageBox.Ok
 
 
 class SimulationParametersSelectionObserver:

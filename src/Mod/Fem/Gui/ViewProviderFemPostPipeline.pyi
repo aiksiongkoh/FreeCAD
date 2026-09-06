@@ -25,3 +25,15 @@ class ViewProviderFemPostPipeline(ViewProviderDocumentObject):
     def updateColorBars(self) -> None:
         """Update coloring of pipeline and its childs"""
         ...
+
+    def createDisplayTaskWidget(self) -> Any:
+        """Returns the display option task panel for a post processing edit task dialog."""
+        ...
+
+    def createExtractionTaskWidget(self) -> Any:
+        """Returns the data extraction task panel for a post processing edit task dialog."""
+        ...
+
+    def createFramesTaskWidget(self) -> Any:
+        """Returns the frames task panel for a post processing edit task dialog."""
+        ...

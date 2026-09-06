@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
 from Base.Metadata import export
+from Base.Vector import Vector
 
 from App.DocumentObject import DocumentObject
 from PartFeature import PartFeature
@@ -33,6 +34,18 @@ class MbDPart(PartFeature):
 
     def populateMassMarkerFromShape(self) -> DocumentObject:
         """Populate massMarker from this part's shape center of mass and principal axes."""
+        ...
+
+    def globalPositionOf(self, point: Vector, /) -> Vector:
+        """Return a point in this part's local coordinates as a global position."""
+        ...
+
+    def globalVelocityOf(self, point: Vector, /) -> Vector:
+        """Return the global velocity of a point in this part's local coordinates."""
+        ...
+
+    def globalAccelerationOf(self, point: Vector, /) -> Vector:
+        """Return the global acceleration of a point in this part's local coordinates."""
         ...
 
     def getMarkersFolder(self) -> DocumentObject:

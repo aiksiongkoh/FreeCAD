@@ -7,6 +7,7 @@
 
 class QMenu;
 class SoGroup;
+class SoSwitch;
 
 namespace MbDFEMGui
 {
@@ -20,12 +21,19 @@ public:
     ~ViewProviderFEMPart() override;
 
     void attach(App::DocumentObject* object) override;
+    void updateData(const App::Property* prop) override;
+    bool canAddToSceneGraph() const override;
     SoGroup* getChildRoot() const override;
     std::vector<App::DocumentObject*> claimChildren() const override;
     std::vector<App::DocumentObject*> claimChildren3D() const override;
     void setupContextMenu(QMenu* menu, QObject* receiver, const char* member) override;
+    void onChanged(const App::Property* prop) override;
 
 private:
+    void updateChildVisibility();
+    bool effectiveChildVisibility() const;
+
+    SoSwitch* childSwitch;
     SoGroup* childRoot;
 };
 

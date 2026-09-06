@@ -17,6 +17,7 @@
 #include <App/Document.h>
 #include <App/OriginGroupExtension.h>
 #include <Gui/Application.h>
+#include <Gui/Action.h>
 #include <Gui/Command.h>
 #include <Gui/Document.h>
 #include <Gui/ViewProviderDocumentObject.h>
@@ -35,6 +36,34 @@ bool addCommandToMenu(QMenu* menu, const char* commandName)
 
     command->addTo(menu);
     command->testActive();
+    return true;
+}
+
+bool addCommandShortcutToMenu(QMenu* menu, const char* commandName)
+{
+    auto* command = commandName
+        ? Gui::Application::Instance->commandManager().getCommandByName(commandName)
+        : nullptr;
+    if (!menu || !command) {
+        return false;
+    }
+
+    command->initAction();
+    QAction* sourceAction = command->getAction() ? command->getAction()->action() : nullptr;
+    if (!sourceAction) {
+        return false;
+    }
+
+    auto* shortcutAction = new QAction(sourceAction->icon(), sourceAction->text(), menu);
+    shortcutAction->setToolTip(sourceAction->toolTip());
+    shortcutAction->setStatusTip(sourceAction->statusTip());
+    shortcutAction->setWhatsThis(sourceAction->whatsThis());
+    shortcutAction->setShortcut(sourceAction->shortcut());
+    shortcutAction->setEnabled(command->isActive());
+    QObject::connect(shortcutAction, &QAction::triggered, menu, [command]() {
+        command->invoke(0, Gui::Command::TriggerAction);
+    });
+    menu->addAction(shortcutAction);
     return true;
 }
 
@@ -90,9 +119,11 @@ QMenu* MbDFEMGui::addOtherContextMenu(QMenu* menu)
         return nullptr;
     }
 
+    addCommandShortcutToMenu(menu, "Std_TransformManip");
+    addCommandShortcutToMenu(menu, "Std_Delete");
+
     auto* otherMenu = menu->addMenu(QObject::tr("Other"));
-    addCommandToMenu(otherMenu, "Std_TransformManip");
-    addCommandToMenu(otherMenu, "Std_Delete");
+    otherMenu->menuAction()->setProperty("MbDFEMOtherContextMenu", true);
 
     return otherMenu;
 }

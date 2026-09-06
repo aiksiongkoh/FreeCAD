@@ -153,6 +153,7 @@ PyMOD_INIT_FUNC(MbDFEM)
     MbDFEM::MbDMotionsFolder::init();
     MbDFEM::MbDActionsFolder::init();
     MbDFEM::FEMPartsFolder::init();
+    MbDFEM::FEMResultsFolder::init();
     MbDFEM::FEMJointsFolder::init();
     MbDFEM::FEMMotionsFolder::init();
     MbDFEM::FEMActionsFolder::init();

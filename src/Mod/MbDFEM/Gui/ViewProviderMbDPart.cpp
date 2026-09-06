@@ -11,8 +11,10 @@
 #include <Inventor/nodes/SoSwitch.h>
 #include <Inventor/nodes/SoGroup.h>
 
+#include <App/Document.h>
 #include <App/GeoFeatureGroupExtension.h>
 #include <Gui/Application.h>
+#include <Gui/Command.h>
 #include <Mod/MbDFEM/App/MbDMassMarker.h>
 #include <Mod/MbDFEM/App/MbDMarker.h>
 #include <Mod/MbDFEM/App/MbDPart.h>
@@ -149,6 +151,27 @@ bool ViewProviderMbDPart::getElementPicked(const SoPickedPoint* pp, std::string&
     }
 
     return PartGui::ViewProviderPart::getElementPicked(pp, subname);
+}
+
+bool ViewProviderMbDPart::doubleClicked()
+{
+    auto* object = getObject();
+    auto* document = object ? object->getDocument() : nullptr;
+    if (!object || !document) {
+        return PartGui::ViewProviderPart::doubleClicked();
+    }
+
+    const std::string documentName = document->getName();
+    const std::string objectName = object->getNameInDocument();
+    const std::string command = "import FreeCAD as App\n"
+                                "import FreeCADMbDPartPanel\n"
+                                "obj = App.getDocument('"
+        + documentName + "').getObject('" + objectName
+        + "')\n"
+          "FreeCADMbDPartPanel.show_part_task_panel(obj)";
+
+    Gui::Command::runCommand(Gui::Command::App, command.c_str());
+    return true;
 }
 
 void ViewProviderMbDPart::setupContextMenu(QMenu* menu, QObject* receiver, const char* member)

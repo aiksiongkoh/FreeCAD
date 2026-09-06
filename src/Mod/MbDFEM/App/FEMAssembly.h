@@ -40,6 +40,8 @@ public:
     void ensureCategoryFolders();
 
     App::DocumentObjectExecReturn* execute() override;
+    int setElementVisible(const char* element, bool visible) override;
+    int isElementVisible(const char* element) const override;
     App::DocumentObject* getSubObject(const char* subname,
                                       PyObject** pyObj = nullptr,
                                       Base::Matrix4D* mat = nullptr,

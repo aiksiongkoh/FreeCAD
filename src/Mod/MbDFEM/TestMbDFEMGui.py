@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
 import sys
+import tempfile
 import unittest
+from pathlib import Path
 
 import FreeCAD as App
 import MbDFEM  # noqa: F401
@@ -205,6 +207,9 @@ class MbDFEMGuiViewProviderTest(unittest.TestCase):
         self.assertTrue(fem_assembly.Placement.isSame(assembly.Placement, 1e-7))
         self.assertEqual(fem_assembly.ViewObject.TypeId, "MbDFEMGui::ViewProviderFEMAssembly")
         self.assertTrue(fem_assembly.ViewObject.isDerivedFrom("Gui::ViewProviderGeometryObject"))
+        self.assertTrue(fem_assembly.Visibility)
+        self.assertTrue(fem_assembly.ViewObject.Visibility)
+        self.assertTrue(fem_assembly.ViewObject.isShow())
         self.assertIsNotNone(fem_assembly.Origin)
         self.assertFalse(fem_assembly.Origin.ViewObject.ShowInTree)
         fem_assembly.Origin.ViewObject.ShowInTree = True
@@ -236,18 +241,24 @@ class MbDFEMGuiViewProviderTest(unittest.TestCase):
                 (mbd_box.XMin, mbd_box.XMax, mbd_box.YMin, mbd_box.YMax, mbd_box.ZMin, mbd_box.ZMax),
             ):
                 self.assertAlmostEqual(fem_value, mbd_value)
-            self.assertIsNotNone(fem_part.material)
-            self.assertEqual(fem_part.material.TypeId, "App::MaterialObjectPython")
-            self.assertEqual(fem_part.material.Category, "Solid")
-            self.assertEqual(fem_part.material.Material, mbd_part.getMassMarker().material)
-            self.assertEqual(fem_part.material.References, [])
-            self.assertIn(fem_part.material, fem_part.Group)
+            import FreeCADMbDFEMEmbedded
+
+            material = FreeCADMbDFEMEmbedded._fem_part_material_object(fem_part, create=False)
+            self.assertIsNotNone(material)
+            self.assertFalse(hasattr(fem_part, "material"))
+            self.assertEqual(material.TypeId, "App::MaterialObjectPython")
+            self.assertEqual(material.Category, "Solid")
+            self.assertEqual(material.Material, mbd_part.getMassMarker().material)
+            self.assertEqual(material.References, [])
+            self.assertIn(material, fem_part.Group)
+            self.assertNotIn(material, fem_assembly.Group)
+            self.assertIsNotNone(fem_part.mesh)
+            self.assertIn(fem_part.mesh, fem_part.Group)
             self.assertIsNotNone(fem_part.solver)
             self.assertEqual(fem_part.solver.TypeId, "Fem::FemSolverObjectPython")
             self.assertTrue(fem_part.solver.isDerivedFrom("Fem::FemSolverObjectPython"))
             self.assertIn(fem_part.solver, fem_part.Group)
             self.assertTrue(fem_part.solver.ViewObject.doubleClicked())
-            import FreeCADMbDFEMEmbedded
 
             dialog = self.Gui.Control.activeDialog()
             self.assertIsInstance(dialog, FreeCADMbDFEMEmbedded.FEMPartSolverTaskPanel)
@@ -261,29 +272,70 @@ class MbDFEMGuiViewProviderTest(unittest.TestCase):
             self.assertIsNone(self.Gui.Control.activeDialog())
             from femviewprovider import view_material_common
 
-            view_material_common.VPMaterialCommon(fem_part.material.ViewObject)
-            fem_part.material.References = [(fem_part, ("Solid1",))]
+            view_material_common.VPMaterialCommon(material.ViewObject)
+            material.References = [(fem_part, ("Solid1",))]
             InitGui.refresh_embedded_fem_part_view_providers(self.document)
             self.assertIsInstance(
-                fem_part.material.ViewObject.Proxy,
+                material.ViewObject.Proxy,
                 InitGui.EmbeddedFEMPartMaterialViewProvider,
             )
-            self.assertEqual(fem_part.material.References, [])
-            self.assertTrue(fem_part.material.ViewObject.doubleClicked())
+            self.assertEqual(material.References, [])
+            self.assertTrue(material.ViewObject.doubleClicked())
             dialog = self.Gui.Control.activeDialog()
             try:
                 self.assertIsInstance(dialog, InitGui.EmbeddedFEMPartMaterialTaskPanel)
                 self.assertEqual(dialog.form, [dialog.parameterWidget])
+                self.assertFalse(hasattr(dialog.parameterWidget, "chbu_allow_edit"))
+                self.assertFalse(hasattr(dialog.parameterWidget, "wgt_material_tree"))
+                from PySide import QtWidgets
+
+                for field in dialog.parameterWidget.findChildren(QtWidgets.QLineEdit):
+                    self.assertTrue(field.isReadOnly())
             finally:
                 if dialog is not None:
                     self.Gui.Control.closeDialog()
             fem_part.Origin.ViewObject.ShowInTree = True
-            self.assertEqual(fem_part.ViewObject.claimChildren(), [fem_part.material, fem_part.solver])
+            self.assertEqual(
+                fem_part.ViewObject.claimChildren(),
+                [material, fem_part.mesh, fem_part.solver],
+            )
             self.assertFalse(fem_part.Origin.ViewObject.ShowInTree)
             fem_part.Origin.ViewObject.ShowInTree = True
-            self.assertEqual(fem_part.ViewObject.claimChildren3D(), [])
+            self.assertEqual(fem_part.ViewObject.claimChildren3D(), [fem_part.mesh])
             self.assertFalse(fem_part.Origin.ViewObject.ShowInTree)
         self.assertEqual(fem_assembly.parts, fem_parts)
+        first_fem_part = fem_parts[0]
+        self.assertEqual(first_fem_part.ViewObject.claimChildren3D(), [first_fem_part.mesh])
+        fem_assembly.Visibility = False
+        self.assertEqual(fem_assembly.ViewObject.claimChildren3D(), [*fem_assembly.parts, *fem_assembly.joints])
+        self.assertTrue(first_fem_part.ViewObject.canAddToSceneGraph())
+        self.assertEqual(first_fem_part.isElementVisible(first_fem_part.mesh.Name), 0)
+        self.assertEqual(first_fem_part.ViewObject.claimChildren3D(), [first_fem_part.mesh])
+        fem_assembly.Visibility = True
+        self.assertEqual(first_fem_part.isElementVisible(first_fem_part.mesh.Name), 1)
+        self.assertEqual(first_fem_part.ViewObject.claimChildren3D(), [first_fem_part.mesh])
+        parts_folder = fem_assembly.getPartsFolder()
+        self.assertEqual(parts_folder.setElementVisible(first_fem_part.Name, False), 0)
+        self.assertFalse(first_fem_part.Visibility)
+        self.assertEqual(first_fem_part.ViewObject.claimChildren3D(), [first_fem_part.mesh])
+        self.assertEqual(parts_folder.isElementVisible(first_fem_part.Name), 0)
+        self.assertEqual(parts_folder.setElementVisible(first_fem_part.Name, True), 1)
+        self.assertTrue(first_fem_part.Visibility)
+        self.assertEqual(first_fem_part.ViewObject.claimChildren3D(), [first_fem_part.mesh])
+        self.Gui.Selection.clearSelection()
+        self.Gui.Selection.addSelection(
+            self.document.Name,
+            fem_assembly.Name,
+            f"{first_fem_part.Name}.",
+        )
+        self.Gui.runCommand("Std_ToggleVisibility", 0)
+        self.assertFalse(first_fem_part.Visibility)
+        self.assertTrue(first_fem_part.ViewObject.canAddToSceneGraph())
+        self.assertEqual(first_fem_part.ViewObject.claimChildren3D(), [first_fem_part.mesh])
+        self.Gui.runCommand("Std_ToggleVisibility", 0)
+        self.assertTrue(first_fem_part.Visibility)
+        self.assertTrue(first_fem_part.ViewObject.canAddToSceneGraph())
+        self.assertEqual(first_fem_part.ViewObject.claimChildren3D(), [first_fem_part.mesh])
         assembly.Placement = App.Placement(
             App.Vector(300, 400, 500),
             App.Rotation(App.Vector(1, 0, 0), 55),
@@ -355,20 +407,290 @@ class MbDFEMGuiViewProviderTest(unittest.TestCase):
         self.assertTrue(fem_part.mesh.Shape.Placement.isSame(App.Placement(), 1e-7))
         self.assertTrue(fem_part.mesh.Placement.isSame(App.Placement(), 1e-7))
         self.assertTrue(fem_part.mesh.getGlobalPlacement().isSame(fem_part.Placement, 1e-7))
+        self.assertEqual(fem_part.ViewObject.claimChildren3D(), [fem_part.mesh])
+        fem_part.Visibility = False
+        self.assertTrue(fem_part.ViewObject.canAddToSceneGraph())
+        self.assertEqual(fem_part.isElementVisible(fem_part.mesh.Name), 0)
+        self.assertEqual(fem_part.ViewObject.claimChildren3D(), [fem_part.mesh])
+        fem_part.Visibility = True
+        self.assertTrue(fem_part.ViewObject.canAddToSceneGraph())
+        self.assertEqual(fem_part.isElementVisible(fem_part.mesh.Name), 1)
+        self.assertEqual(fem_part.ViewObject.claimChildren3D(), [fem_part.mesh])
+        fem_part.setElementVisible(fem_part.mesh.Name, False)
+        self.assertEqual(fem_part.isElementVisible(fem_part.mesh.Name), 0)
+        self.assertEqual(fem_part.ViewObject.claimChildren3D(), [])
+        fem_part.setElementVisible(fem_part.mesh.Name, True)
+        self.assertEqual(fem_part.isElementVisible(fem_part.mesh.Name), 1)
+        self.assertEqual(fem_part.ViewObject.claimChildren3D(), [fem_part.mesh])
         self.assertFalse(fem_part.mesh.Shape.ViewObject.Visibility)
         self.assertFalse(fem_part.mesh.Shape.ViewObject.ShowInTree)
         self.assertEqual(fem_part.mesh.ElementOrder, "2nd")
         self.assertEqual(fem_part.mesh.SecondOrderLinear, False)
-        self.assertNotIn(fem_part.mesh, fem_part.Group)
+        self.assertIn(fem_part.mesh, fem_part.Group)
+        import ObjectsFem
+        import FreeCADMbDFEMEmbedded
+
+        ccx_results_mesh = ObjectsFem.makeMeshResult(document, "CCX_Results_Mesh")
+        ccx_results = ObjectsFem.makeResultMechanical(document, "CCX_Results")
+        pipeline_results = document.addObject("Fem::FemPostPipeline", "Pipeline_CCX_Results")
+        ccx_results.Mesh = ccx_results_mesh
+        fem_part.results = [ccx_results]
+        fem_part.visual = pipeline_results
+        fem_part.addObject(ccx_results)
+        fem_part.addObject(pipeline_results)
+        self.assertNotIn(ccx_results_mesh, fem_part.Group)
+        FreeCADMbDFEMEmbedded.refresh_view_providers(document)
+        self.assertFalse(ccx_results_mesh.ViewObject.Visibility)
+        self.assertFalse(ccx_results_mesh.ViewObject.ShowInTree)
+        results_folder = fem_part.getResultsFolder()
+        self.assertIsNotNone(results_folder)
+        self.assertIn(results_folder, fem_part.Group)
+        self.assertIn(ccx_results, results_folder.Group)
+        self.assertIn(pipeline_results, fem_part.Group)
+        self.assertFalse(pipeline_results.ViewObject.ShowInTree)
         fem_part.Origin.ViewObject.ShowInTree = True
-        self.assertEqual(fem_part.ViewObject.claimChildren(), [fem_part.mesh])
+        self.assertEqual(
+            fem_part.ViewObject.claimChildren(),
+            [fem_part.mesh, results_folder],
+        )
         self.assertFalse(fem_part.Origin.ViewObject.ShowInTree)
+        self.assertEqual(results_folder.ViewObject.claimChildren(), [ccx_results])
         self.assertIs(fem_part.getSubObject(f"{fem_part.mesh.Name}."), fem_part.mesh)
+        self.assertIs(fem_part.getSubObject(f"{results_folder.Name}."), results_folder)
+        self.assertIs(fem_part.getSubObject(f"{ccx_results.Name}."), ccx_results)
+        self.assertIs(fem_part.getSubObject(f"{pipeline_results.Name}."), pipeline_results)
+        self.assertEqual(ccx_results.ViewObject.Proxy.claimChildren(), [ccx_results_mesh])
         fem_part.Origin.ViewObject.ShowInTree = True
-        self.assertEqual(fem_part.ViewObject.claimChildren3D(), [])
+        self.assertEqual(fem_part.ViewObject.claimChildren3D(), [fem_part.mesh, pipeline_results])
         self.assertFalse(fem_part.Origin.ViewObject.ShowInTree)
         self.assertIn(fem_part.mesh.Shape, fem_part.mesh.ViewObject.Proxy.claimChildren())
         self.assertEqual(self.Gui.Selection.getSelection(), [fem_part.mesh])
+
+    def test_results_folder_double_click_opens_state_solver_panel(self):
+        import FreeCADMbDFEMResultsPanel
+
+        assembly = self.document.addObject("MbDFEM::MbDAssembly", "Assembly")
+        part = self.document.addObject("MbDFEM::MbDPart", "Part")
+        fem_part = self.document.addObject("MbDFEM::FEMPart", "FEMPart")
+        assembly.addPart(part)
+        fem_part.mbdItem = part
+        mesh = self.document.addObject("Fem::FemMeshObjectPython", "Mesh")
+        pipeline = self.document.addObject("Fem::FemPostPipeline", "Pipeline_CCX_Results")
+        fem_part.mesh = mesh
+        fem_part.visual = pipeline
+        assembly.times = [0.0, 0.25]
+        part.xs = [0.0, 1.0]
+        part.ys = [0.0, 2.0]
+        part.zs = [0.0, 3.0]
+
+        folder = fem_part.ensureResultsFolder()
+        self.document.recompute()
+        self.Gui.updateGui()
+
+        self.assertTrue(folder.ViewObject.doubleClicked())
+        dialog = self.Gui.Control.activeDialog()
+
+        try:
+            self.assertIsInstance(dialog, FreeCADMbDFEMResultsPanel.FEMResultsTaskPanel)
+            self.assertIs(dialog.results_folder, folder)
+            self.assertIs(dialog.fem_part, fem_part)
+            dialog.state_spin.setValue(1)
+            self.assertEqual(part.Placement.Base, App.Vector(1000.0, 2000.0, 3000.0))
+            self.assertEqual(fem_part.Placement.Base, App.Vector(1000.0, 2000.0, 3000.0))
+            self.assertEqual(fem_part.ViewObject.claimChildren3D(), [mesh, pipeline])
+            self.assertTrue(mesh.Placement.isSame(App.Placement(), 1e-7))
+            self.assertTrue(mesh.getGlobalPlacement().isSame(fem_part.Placement, 1e-7))
+            self.assertTrue(pipeline.Placement.isSame(App.Placement(), 1e-7))
+            self.assertTrue(pipeline.getGlobalPlacement().isSame(fem_part.Placement, 1e-7))
+        finally:
+            if self.Gui.Control.activeDialog() is not None:
+                self.Gui.Control.closeDialog()
+
+    def test_results_panel_assigns_calculix_results_by_state_index(self):
+        import FreeCADMbDFEMResultsPanel
+
+        fem_part = self.document.addObject("MbDFEM::FEMPart", "FEMPart")
+        result_0 = self.document.addObject("Fem::FemResultObjectPython", "CCX_Results_0")
+        result_1 = self.document.addObject("Fem::FemResultObjectPython", "CCX_Results_1")
+        replacement = self.document.addObject("Fem::FemResultObjectPython", "CCX_Results_Replacement")
+
+        FreeCADMbDFEMResultsPanel._assign_result_for_state(fem_part, 0, result_0)
+        FreeCADMbDFEMResultsPanel._assign_result_for_state(fem_part, 1, result_1)
+        FreeCADMbDFEMResultsPanel._assign_result_for_state(
+            fem_part,
+            2,
+            result_1,
+        )
+        FreeCADMbDFEMResultsPanel._assign_result_for_state(
+            fem_part,
+            0,
+            replacement,
+        )
+
+        self.assertEqual(fem_part.results, [replacement, result_1])
+        self.assertEqual(fem_part.getResultsFolder().Group, [replacement, result_1])
+        self.assertEqual(replacement.MbDFEMStateIndex, 0)
+        self.assertEqual(result_1.MbDFEMStateIndex, 2)
+
+    def test_results_panel_solve_state_applies_mbd_state_and_assigns_result(self):
+        import FreeCADMbDFEMResultsPanel
+
+        assembly = self.document.addObject("MbDFEM::MbDAssembly", "Assembly")
+        part = self.document.addObject("MbDFEM::MbDPart", "Part")
+        fem_part = self.document.addObject("MbDFEM::FEMPart", "FEMPart")
+        solver = self.document.addObject("Fem::FemSolverObjectPython", "Calculix")
+        result = self.document.addObject("Fem::FemResultObjectPython", "CCX_Results")
+        assembly.addPart(part)
+        fem_part.mbdItem = part
+        fem_part.solver = solver
+        assembly.times = [0.0, 0.25]
+        part.xs = [0.0, 1.0]
+        part.ys = [0.0, 2.0]
+        part.zs = [0.0, 3.0]
+
+        def runner(runner_fem_part, state_index):
+            self.assertIs(runner_fem_part, fem_part)
+            self.assertEqual(state_index, 1)
+            return result
+
+        assigned = FreeCADMbDFEMResultsPanel.solve_fem_part_state(fem_part, 1, runner=runner)
+
+        self.assertIs(assigned, result)
+        self.assertEqual(fem_part.results, [result])
+        self.assertEqual(fem_part.getResultsFolder().Group, [result])
+        self.assertEqual(result.MbDFEMStateIndex, 1)
+        self.assertAlmostEqual(result.MbDFEMStateTime, 0.25)
+        self.assertEqual(part.Placement.Base, App.Vector(1000.0, 2000.0, 3000.0))
+        self.assertEqual(fem_part.Placement.Base, App.Vector(1000.0, 2000.0, 3000.0))
+
+    def test_results_panel_solve_state_uses_frame_calculix_directory(self):
+        import FreeCADMbDBackend
+        import FreeCADMbDFEMEmbedded
+        import FreeCADMbDFEMResultsPanel
+
+        with tempfile.TemporaryDirectory() as directory:
+            self.document.saveAs(str(Path(directory) / "MyAssembly.FCStd"))
+
+            assembly = self.document.addObject("MbDFEM::MbDAssembly", "Assembly")
+            part = self.document.addObject("MbDFEM::MbDPart", "MbDPart001")
+            fem_part = self.document.addObject("MbDFEM::FEMPart", "FEMPart")
+            solver = self.document.addObject("Fem::FemSolverObjectPython", "Calculix")
+            assembly.addPart(part)
+            fem_part.mbdItem = part
+            fem_part.solver = solver
+            assembly.times = [0.0, 0.25]
+            part.xs = [0.0, 1.0]
+            part.ys = [0.0, 2.0]
+            part.zs = [0.0, 3.0]
+
+            calls = {}
+
+            class FakeCcxTools:
+                def __init__(self, tool_fem_part, tool_solver):
+                    self.fem_part = tool_fem_part
+                    self.solver = tool_solver
+
+                def setup_working_dir(self, working_dir):
+                    calls["working_dir"] = working_dir
+
+                def set_base_name(self, base_name):
+                    calls["base_name"] = base_name
+
+                def setup_ccx(self):
+                    calls["setup_ccx"] = True
+
+                def run(self):
+                    result = self.fem_part.Document.addObject(
+                        "Fem::FemResultObjectPython",
+                        "CCX_Results",
+                    )
+                    self.fem_part.results = [result]
+                    return True
+
+            original_tools = FreeCADMbDFEMEmbedded.FEMPartCcxTools
+            try:
+                FreeCADMbDFEMEmbedded.FEMPartCcxTools = FakeCcxTools
+                FreeCADMbDFEMResultsPanel.solve_fem_part_state(fem_part, 1)
+            finally:
+                FreeCADMbDFEMEmbedded.FEMPartCcxTools = original_tools
+
+            self.assertEqual(
+                calls["working_dir"],
+                str(
+                    Path(directory)
+                    / "MyAssembly"
+                    / "MbDFEM"
+                    / "Case001"
+                    / "MbDPart001"
+                    / "Frame000001"
+                ),
+            )
+            self.assertEqual(calls["base_name"], FreeCADMbDBackend.CALCULIX_BASE_NAME)
+
+    def test_results_panel_interval_controls_and_playback_use_state_results(self):
+        import FreeCADMbDFEMResultsPanel
+
+        assembly = self.document.addObject("MbDFEM::MbDAssembly", "Assembly")
+        part = self.document.addObject("MbDFEM::MbDPart", "Part")
+        fem_part = self.document.addObject("MbDFEM::FEMPart", "FEMPart")
+        result_1 = self.document.addObject("Fem::FemResultObjectPython", "CCX_Results_1")
+        result_2 = self.document.addObject("Fem::FemResultObjectPython", "CCX_Results_2")
+        assembly.addPart(part)
+        fem_part.mbdItem = part
+        assembly.times = [0.0, 0.25, 0.5]
+        part.xs = [0.0, 1.0, 2.0]
+        part.ys = [0.0, 2.0, 4.0]
+        part.zs = [0.0, 3.0, 6.0]
+        folder = fem_part.ensureResultsFolder()
+        FreeCADMbDFEMResultsPanel._assign_result_for_state(fem_part, 2, result_2)
+        FreeCADMbDFEMResultsPanel._assign_result_for_state(fem_part, 1, result_1)
+        self.document.recompute()
+        self.Gui.updateGui()
+
+        panel = FreeCADMbDFEMResultsPanel.FEMResultsTaskPanel(folder)
+        loaded_results = []
+        original_ensure_pipeline = FreeCADMbDFEMResultsPanel._ensure_visual_pipeline
+
+        def ensure_pipeline(runner_fem_part, result, preferred_field=None):
+            self.assertIs(runner_fem_part, fem_part)
+            self.assertIn(preferred_field, ("von Mises Stress", "Displacement Magnitude"))
+            loaded_results.append(result)
+            return pipeline
+
+        pipeline = self.document.addObject("Fem::FemPostPipeline", "Pipeline_CCX_Results")
+        fem_part.visual = pipeline
+        FreeCADMbDFEMResultsPanel._ensure_visual_pipeline = ensure_pipeline
+        try:
+            self.assertEqual(panel.start_state_spin.value(), 0)
+            self.assertEqual(panel.end_state_spin.value(), 2)
+            panel.start_state_spin.setValue(1)
+            panel.end_state_spin.setValue(2)
+            self.assertEqual(panel._interval_indices(), [1, 2])
+            self.assertEqual(panel.start_state_count_label.text(), "/ 2")
+            self.assertEqual(panel.end_state_count_label.text(), "/ 2")
+            self.assertEqual(panel.start_time_label.text(), "0.25 s")
+            self.assertEqual(panel.end_time_label.text(), "0.5 s")
+
+            panel._set_state(1)
+            self.assertIs(loaded_results[-1], result_1)
+            self.assertFalse(result_1.ViewObject.Visibility)
+            self.assertFalse(result_2.ViewObject.Visibility)
+            self.assertTrue(pipeline.ViewObject.Visibility)
+            self.assertEqual(part.Placement.Base, App.Vector(1000.0, 2000.0, 3000.0))
+
+            panel._play_results()
+            self.assertTrue(panel._playing)
+            panel._play_next_state()
+            self.assertEqual(panel.state_spin.value(), 2)
+            self.assertIs(loaded_results[-1], result_2)
+            self.assertFalse(result_1.ViewObject.Visibility)
+            self.assertFalse(result_2.ViewObject.Visibility)
+            self.assertTrue(pipeline.ViewObject.Visibility)
+            panel._stop_playback()
+            self.assertFalse(panel._playing)
+        finally:
+            FreeCADMbDFEMResultsPanel._ensure_visual_pipeline = original_ensure_pipeline
+            panel.reject()
 
     def test_animation_parameters_selection_opens_task_panel(self):
         import FreeCADMbDAnimationPanel
@@ -470,6 +792,35 @@ class MbDFEMGuiViewProviderTest(unittest.TestCase):
             self.assertIsInstance(dialog, FreeCADMbDSimulationPanel.SimulationTaskPanel)
         finally:
             if dialog is not None:
+                self.Gui.Control.closeDialog()
+
+    def test_part_task_panel_edits_velocity_and_omega(self):
+        import FreeCADMbDPartPanel
+
+        part = self.document.addObject("MbDFEM::MbDPart", "Part")
+        part.velocity = App.Vector(1, 2, 3)
+        part.omega = App.Vector(4, 5, 6)
+        self.document.recompute()
+        self.Gui.updateGui()
+
+        self.assertTrue(part.ViewObject.doubleClicked())
+        dialog = self.Gui.Control.activeDialog()
+
+        try:
+            self.assertIsInstance(dialog, FreeCADMbDPartPanel.PartTaskPanel)
+            self.assertIs(dialog.part, part)
+            dialog.velocity_x.setText("10")
+            dialog.velocity_y.setText("20")
+            dialog.velocity_z.setText("30")
+            dialog.omega_x.setText("40")
+            dialog.omega_y.setText("50")
+            dialog.omega_z.setText("60")
+
+            self.assertTrue(dialog.accept())
+            self.assertEqual(part.velocity, App.Vector(10, 20, 30))
+            self.assertEqual(part.omega, App.Vector(40, 50, 60))
+        finally:
+            if self.Gui.Control.activeDialog() is not None:
                 self.Gui.Control.closeDialog()
 
 

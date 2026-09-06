@@ -11,7 +11,9 @@ set(MbDFEM_Scripts
     FreeCADMbDBackend.py
     FreeCADMbDExporter.py
     FreeCADMbDFEMEmbedded.py
+    FreeCADMbDFEMResultsPanel.py
     FreeCADMbDMassMarkerPanel.py
+    FreeCADMbDPartPanel.py
     FreeCADMbDResults.py
     FreeCADMbDSimulationPanel.py
     Init.py

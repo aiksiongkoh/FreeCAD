@@ -4,8 +4,10 @@
 
 #include <App/DocumentObjectGroup.h>
 #include <App/OriginGroupExtension.h>
+#include <App/PropertyGeo.h>
 #include <App/PropertyLinks.h>
 #include <App/PropertyStandard.h>
+#include <Base/Vector3D.h>
 #include <Mod/MbDFEM/MbDFEMGlobal.h>
 #include <Mod/Part/App/PartFeature.h>
 
@@ -27,6 +29,10 @@ public:
 
     App::PropertyLinkList markers;
     App::PropertyLink massMarker;
+    App::PropertyVector velocity;
+    App::PropertyVector omega;  // Angular velocity of part in global coordinates
+    App::PropertyVector acceleration;
+    App::PropertyVector alpha;  // Angular acceleration of part in global coordinates
     App::PropertyFloatList xs;
     App::PropertyFloatList ys;
     App::PropertyFloatList zs;
@@ -50,6 +56,9 @@ public:
     void removeMarker(MbDMarker* marker);
     void setMassMarker(MbDMassMarker* marker);
     MbDMassMarker* populateMassMarkerFromShape();
+    Base::Vector3d globalPositionOf(const Base::Vector3d& point) const;
+    Base::Vector3d globalVelocityOf(const Base::Vector3d& point) const;
+    Base::Vector3d globalAccelerationOf(const Base::Vector3d& point) const;
 
     int setElementVisible(const char* element, bool visible) override;
     int isElementVisible(const char* element) const override;
