@@ -67,14 +67,42 @@ def _source_feature(document, name):
     return feature
 
 
+def _mbd_part_shape(source):
+    shape = source.Shape.copy()
+    shape.Placement = App.Placement()
+    solids = list(getattr(shape, "Solids", []))
+    solid_count = len(solids)
+    if solid_count == 1:
+        return shape
+
+    if not solids:
+        raise RuntimeError(
+            "MbDPart requires one connected solid.\n"
+            f"Found ShapeType={shape.ShapeType}, Solids=0.\n"
+            "Fuse the source shape into a single solid before creating the MbDPart."
+        )
+
+    fused = solids[0].multiFuse(solids[1:])
+    if len(getattr(fused, "Solids", [])) != 1:
+        raise RuntimeError(
+            "MbDPart requires one connected solid.\n"
+            f"Found ShapeType={shape.ShapeType}, Solids={solid_count}.\n"
+            "Fuse the source shape into a single solid before creating the MbDPart."
+        )
+
+    App.Console.PrintWarning(
+        f"MbDPart {source.Name}: source shape contained {solid_count} solids; "
+        "fused them into one solid. The original Part::Feature is unchanged.\n"
+    )
+    return fused
+
+
 def _create_mbd_part(document, assembly, source_name):
     source = _source_feature(document, source_name)
     part = document.addObject("MbDFEM::MbDPart", f"{source.Name}_MbDPart")
-    shape = source.Shape.copy()
-    shape.Placement = App.Placement()
     part.Label = source.Label
     part.Placement = source.Placement
-    part.Shape = shape
+    part.Shape = _mbd_part_shape(source)
     return part
 
 

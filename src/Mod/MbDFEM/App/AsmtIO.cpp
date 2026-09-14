@@ -31,7 +31,8 @@
 namespace
 {
 
-constexpr double lengthScale = 0.001;
+constexpr double documentLengthToSiLength = 0.001;
+constexpr double siLengthToDocumentLength = 1000.0;
 
 std::string safeName(const App::DocumentObject* obj)
 {
@@ -107,12 +108,16 @@ Base::Placement placementOf(const App::DocumentObject* obj)
 std::vector<double> positionValues(const Base::Placement& placement)
 {
     const auto& pos = placement.getPosition();
-    return {pos.x * lengthScale, pos.y * lengthScale, pos.z * lengthScale};
+    return {pos.x * documentLengthToSiLength,
+            pos.y * documentLengthToSiLength,
+            pos.z * documentLengthToSiLength};
 }
 
 std::vector<double> velocityValues(const Base::Vector3d& velocity)
 {
-    return {velocity.x * lengthScale, velocity.y * lengthScale, velocity.z * lengthScale};
+    return {velocity.x * documentLengthToSiLength,
+            velocity.y * documentLengthToSiLength,
+            velocity.z * documentLengthToSiLength};
 }
 
 std::vector<double> vectorValues(const Base::Vector3d& vector)
@@ -388,7 +393,10 @@ void writeGravity(Writer& writer, MbDFEM::MbDAssembly* assembly)
     writer.line(1, "ConstantGravity");
     if (auto* gravity = assembly->getGravity()) {
         const auto value = gravity->gravity.getValue();
-        writer.vector(2, {value.x, value.y, value.z});
+        writer.vector(2,
+                      {value.x * documentLengthToSiLength,
+                       value.y * documentLengthToSiLength,
+                       value.z * documentLengthToSiLength});
     }
     else {
         writer.vector(2, {0.0, 0.0, -9.81});
@@ -497,22 +505,53 @@ App::DocumentObject* targetObject(
     return object && object->isDerivedFrom(MbDFEM::MbDJoint::getClassTypeId()) ? object : nullptr;
 }
 
-App::PropertyFloatList* resultProperty(App::DocumentObject* object, const std::string& keyword)
+struct ResultProperty
 {
-    static const std::map<std::string, const char*> properties {
-        {"X", "xs"},          {"Y", "ys"},          {"Z", "zs"},         {"Bryantx", "bryxs"},
-        {"Bryanty", "bryys"}, {"Bryantz", "bryzs"}, {"VX", "vxs"},       {"VY", "vys"},
-        {"VZ", "vzs"},        {"OmegaX", "omexs"},  {"OmegaY", "omeys"}, {"OmegaZ", "omezs"},
-        {"AX", "axs"},        {"AY", "ays"},        {"AZ", "azs"},       {"AlphaX", "alpxs"},
-        {"AlphaY", "alpys"},  {"AlphaZ", "alpzs"},  {"FXonI", "fxs"},    {"FYonI", "fys"},
-        {"FZonI", "fzs"},     {"TXonI", "txs"},     {"TYonI", "tys"},    {"TZonI", "tzs"},
+    App::PropertyFloatList* property {};
+    double scale {1.0};
+};
+
+ResultProperty resultProperty(App::DocumentObject* object, const std::string& keyword)
+{
+    struct PropertyMapping
+    {
+        const char* name {};
+        double scale {1.0};
+    };
+
+    static const std::map<std::string, PropertyMapping> properties {
+        {"X", {"xs", siLengthToDocumentLength}},
+        {"Y", {"ys", siLengthToDocumentLength}},
+        {"Z", {"zs", siLengthToDocumentLength}},
+        {"Bryantx", {"bryxs", 1.0}},
+        {"Bryanty", {"bryys", 1.0}},
+        {"Bryantz", {"bryzs", 1.0}},
+        {"VX", {"vxs", siLengthToDocumentLength}},
+        {"VY", {"vys", siLengthToDocumentLength}},
+        {"VZ", {"vzs", siLengthToDocumentLength}},
+        {"OmegaX", {"omexs", 1.0}},
+        {"OmegaY", {"omeys", 1.0}},
+        {"OmegaZ", {"omezs", 1.0}},
+        {"AX", {"axs", siLengthToDocumentLength}},
+        {"AY", {"ays", siLengthToDocumentLength}},
+        {"AZ", {"azs", siLengthToDocumentLength}},
+        {"AlphaX", {"alpxs", 1.0}},
+        {"AlphaY", {"alpys", 1.0}},
+        {"AlphaZ", {"alpzs", 1.0}},
+        {"FXonI", {"fxs", 1.0}},
+        {"FYonI", {"fys", 1.0}},
+        {"FZonI", {"fzs", 1.0}},
+        {"TXonI", {"txs", 1.0}},
+        {"TYonI", {"tys", 1.0}},
+        {"TZonI", {"tzs", 1.0}},
     };
 
     const auto it = properties.find(keyword);
     if (it == properties.end() || !object) {
-        return nullptr;
+        return {};
     }
-    return freecad_cast<App::PropertyFloatList*>(object->getPropertyByName(it->second));
+    return {freecad_cast<App::PropertyFloatList*>(object->getPropertyByName(it->second.name)),
+            it->second.scale};
 }
 
 struct SeriesAssignment
@@ -522,6 +561,17 @@ struct SeriesAssignment
     std::string propertyName;
     std::vector<double> values;
 };
+
+std::vector<double> scaledValues(std::vector<double> values, double scale)
+{
+    if (scale == 1.0) {
+        return values;
+    }
+    for (auto& value : values) {
+        value *= scale;
+    }
+    return values;
+}
 
 void validateSeriesLengths(
     const std::vector<double>* timeValues,
@@ -657,9 +707,12 @@ std::vector<App::DocumentObject*> MbDFEM::importSolvedAsmt(
             continue;
         }
 
-        auto* property = resultProperty(currentObject, keyword);
-        if (property) {
-            assignments.push_back({currentObject, property, property->getName(), seriesValues(tokens)});
+        const auto result = resultProperty(currentObject, keyword);
+        if (result.property) {
+            assignments.push_back({currentObject,
+                                   result.property,
+                                   result.property->getName(),
+                                   scaledValues(seriesValues(tokens), result.scale)});
         }
     }
 

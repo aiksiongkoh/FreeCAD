@@ -63,12 +63,16 @@ class AnimationTaskPanel:
         self.play_button = QtWidgets.QToolButton()
         self.play_button.setText("Play")
         self.play_button.setToolTip("Play")
-        self.pause_button = QtWidgets.QToolButton()
-        self.pause_button.setText("Pause")
-        self.pause_button.setToolTip("Pause")
-        self.stop_button = QtWidgets.QToolButton()
-        self.stop_button.setText("Stop")
-        self.stop_button.setToolTip("Stop")
+        self.play_button.setCheckable(True)
+        self.input_button = QtWidgets.QToolButton()
+        self.input_button.setText("Input")
+        self.input_button.setToolTip("Pause at input frame")
+        self.first_button = QtWidgets.QToolButton()
+        self.first_button.setText("First")
+        self.first_button.setToolTip("Pause at first frame")
+        self.last_button = QtWidgets.QToolButton()
+        self.last_button.setText("Last")
+        self.last_button.setToolTip("Pause at last frame")
         self.step_forward_button = QtWidgets.QToolButton()
         self.step_forward_button.setText(">")
         self.step_forward_button.setToolTip("Step forward")
@@ -76,8 +80,9 @@ class AnimationTaskPanel:
         for button in (
             self.step_back_button,
             self.play_button,
-            self.pause_button,
-            self.stop_button,
+            self.input_button,
+            self.first_button,
+            self.last_button,
             self.step_forward_button,
         ):
             button_layout.addWidget(button)
@@ -87,9 +92,9 @@ class AnimationTaskPanel:
         layout.addWidget(self.slider)
 
         frame_layout = QtWidgets.QHBoxLayout()
-        frame_layout.addWidget(QtWidgets.QLabel("Result frame:"))
+        frame_layout.addWidget(QtWidgets.QLabel("Current Frame:"))
         self.frame_spin = QtWidgets.QSpinBox()
-        self.frame_spin.setToolTip("Result-series frame index")
+        self.frame_spin.setToolTip("Current result-series frame index")
         frame_layout.addWidget(self.frame_spin)
         self.frame_count_label = QtWidgets.QLabel()
         frame_layout.addWidget(self.frame_count_label)
@@ -102,47 +107,52 @@ class AnimationTaskPanel:
         settings = QtWidgets.QFormLayout()
         self.update_rate_spin = QtWidgets.QSpinBox()
         self.update_rate_spin.setRange(1, 240)
-        self.update_rate_spin.setSuffix(" updates/sec")
-        self.update_rate_spin.setToolTip("Real-time UI ticks per second")
+        self.update_rate_spin.setSuffix(" frames/sec")
+        self.update_rate_spin.setToolTip("Simulation frames per real second")
         self.start_frame_spin = QtWidgets.QSpinBox()
         self.start_frame_spin.setToolTip("First result-series frame index used for playback")
         self.end_frame_spin = QtWidgets.QSpinBox()
         self.end_frame_spin.setToolTip("Last result-series frame index used for playback")
         self.speed_spin = QtWidgets.QDoubleSpinBox()
-        self.speed_spin.setRange(0.01, 100.0)
+        self.speed_spin.setRange(0.0, 1000000.0)
         self.speed_spin.setDecimals(2)
         self.speed_spin.setSingleStep(0.25)
         self.speed_spin.setSuffix("x")
-        self.speed_spin.setToolTip("Simulation seconds per real second multiplier")
+        self.speed_spin.setToolTip("Simulation seconds per real second from the selected frame rate")
+        self.speed_spin.setReadOnly(True)
+        self.speed_spin.setButtonSymbols(QtWidgets.QAbstractSpinBox.NoButtons)
+        self.skipped_spin = QtWidgets.QSpinBox()
+        self.skipped_spin.setRange(0, 2147483647)
+        self.skipped_spin.setReadOnly(True)
+        self.skipped_spin.setButtonSymbols(QtWidgets.QAbstractSpinBox.NoButtons)
+        self.skipped_spin.setToolTip("Simulation frames skipped because display could not keep up")
         self.scale_spin = QtWidgets.QDoubleSpinBox()
         self.scale_spin.setRange(0.001, 1000000.0)
         self.scale_spin.setDecimals(3)
         self.scale_spin.setSingleStep(100.0)
         self.loop_check = QtWidgets.QCheckBox()
-        self.interpolate_check = QtWidgets.QCheckBox()
-        settings.addRow("Update rate:", self.update_rate_spin)
-        settings.addRow("Start frame:", self.start_frame_spin)
-        settings.addRow("End frame:", self.end_frame_spin)
+        settings.addRow("Frame Rate:", self.update_rate_spin)
+        settings.addRow("First Frame:", self.start_frame_spin)
+        settings.addRow("Last Frame:", self.end_frame_spin)
         settings.addRow("Playback speed:", self.speed_spin)
+        settings.addRow("Frames Skipped:", self.skipped_spin)
         settings.addRow("Position scale:", self.scale_spin)
         settings.addRow("Loop:", self.loop_check)
-        settings.addRow("Interpolate:", self.interpolate_check)
         layout.addLayout(settings)
 
         self.step_back_button.clicked.connect(self._step_backward)
-        self.play_button.clicked.connect(self._play)
-        self.pause_button.clicked.connect(self._pause)
-        self.stop_button.clicked.connect(self._stop)
+        self.play_button.clicked.connect(self._toggle_playback)
+        self.input_button.clicked.connect(self._input_frame)
+        self.first_button.clicked.connect(self._first_frame)
+        self.last_button.clicked.connect(self._last_frame)
         self.step_forward_button.clicked.connect(self._step_forward)
         self.slider.valueChanged.connect(self._set_frame)
         self.frame_spin.valueChanged.connect(self._set_frame)
         self.update_rate_spin.valueChanged.connect(self._set_update_rate)
         self.start_frame_spin.valueChanged.connect(self._set_start_frame)
         self.end_frame_spin.valueChanged.connect(self._set_end_frame)
-        self.speed_spin.valueChanged.connect(self._set_speed)
         self.scale_spin.valueChanged.connect(self._set_scale)
         self.loop_check.toggled.connect(self._set_loop)
-        self.interpolate_check.toggled.connect(self._set_interpolate)
 
         self._load_parameters()
         self._configure_frame_controls()
@@ -155,6 +165,7 @@ class AnimationTaskPanel:
 
     def accept(self):
         self._pause()
+        self._apply_parameters()
         return True
 
     def reject(self):
@@ -165,28 +176,55 @@ class AnimationTaskPanel:
     def _parameter_values(self):
         return {
             "updateRate": getattr(self.animation_parameters, "updateRate", 30),
+            "currentFrame": getattr(self.animation_parameters, "currentFrame", 0),
             "startFrame": getattr(self.animation_parameters, "startFrame", 1),
             "endFrame": getattr(self.animation_parameters, "endFrame", -1),
             "playbackSpeed": getattr(self.animation_parameters, "playbackSpeed", 1.0),
             "showTrails": getattr(self.animation_parameters, "showTrails", False),
             "trailLength": getattr(self.animation_parameters, "trailLength", 60),
             "loop": getattr(self.animation_parameters, "loop", True),
-            "interpolateFrames": getattr(self.animation_parameters, "interpolateFrames", True),
-            "lengthScale": getattr(self.controller, "length_scale", None),
+            "lengthScale": getattr(self.animation_parameters, "lengthScale", None),
         }
 
     def _restore_parameters(self, values):
         self.animation_parameters.updateRate = values["updateRate"]
+        self.animation_parameters.currentFrame = values["currentFrame"]
         self.animation_parameters.startFrame = values["startFrame"]
         self.animation_parameters.endFrame = values["endFrame"]
         self.animation_parameters.playbackSpeed = values["playbackSpeed"]
         self.animation_parameters.showTrails = values["showTrails"]
         self.animation_parameters.trailLength = values["trailLength"]
         self.animation_parameters.loop = values["loop"]
-        self.animation_parameters.interpolateFrames = values["interpolateFrames"]
+        if values["lengthScale"] is not None:
+            self.animation_parameters.lengthScale = values["lengthScale"]
         if self.controller is not None and values["lengthScale"] is not None:
             self.controller.length_scale = values["lengthScale"]
-            self.controller.setFrame(self.controller.current_frame)
+            self.controller.setFrame(values["currentFrame"])
+
+    def _apply_parameters(self):
+        for spin_box in (
+            self.frame_spin,
+            self.update_rate_spin,
+            self.start_frame_spin,
+            self.end_frame_spin,
+            self.scale_spin,
+        ):
+            spin_box.interpretText()
+
+        start_frame = int(self.start_frame_spin.value())
+        end_frame = max(int(self.end_frame_spin.value()), start_frame)
+        self.animation_parameters.updateRate = int(self.update_rate_spin.value())
+        self.animation_parameters.startFrame = start_frame
+        self.animation_parameters.endFrame = end_frame
+        self.animation_parameters.lengthScale = float(self.scale_spin.value())
+        self.animation_parameters.loop = bool(self.loop_check.isChecked())
+        if self.controller is not None:
+            self.controller.length_scale = float(self.scale_spin.value())
+            self.animation_parameters.playbackSpeed = float(self.controller.playback_speed)
+            self.controller.setFrame(self.frame_spin.value())
+        else:
+            self.animation_parameters.playbackSpeed = float(self.speed_spin.value())
+            self.animation_parameters.currentFrame = int(self.frame_spin.value())
 
     def _load_parameters(self):
         self._updating = True
@@ -200,12 +238,13 @@ class AnimationTaskPanel:
                     )
                 )
             )
-            self.speed_spin.setValue(float(getattr(self.animation_parameters, "playbackSpeed", 1.0)))
-            self.scale_spin.setValue(float(getattr(self.controller, "length_scale", 1000.0)))
-            self.loop_check.setChecked(bool(getattr(self.animation_parameters, "loop", True)))
-            self.interpolate_check.setChecked(
-                bool(getattr(self.animation_parameters, "interpolateFrames", True))
+            self.speed_spin.setValue(
+                float(self.controller.playback_speed)
+                if self.controller is not None
+                else float(getattr(self.animation_parameters, "playbackSpeed", 0.0))
             )
+            self.scale_spin.setValue(float(getattr(self.animation_parameters, "lengthScale", 1.0)))
+            self.loop_check.setChecked(bool(getattr(self.animation_parameters, "loop", True)))
         finally:
             self._updating = False
 
@@ -230,8 +269,9 @@ class AnimationTaskPanel:
         for widget in (
             self.step_back_button,
             self.play_button,
-            self.pause_button,
-            self.stop_button,
+            self.input_button,
+            self.first_button,
+            self.last_button,
             self.step_forward_button,
             self.slider,
             self.frame_spin,
@@ -251,24 +291,41 @@ class AnimationTaskPanel:
 
         current_frame = self.controller.current_frame if self.controller is not None else 0
         current_time = self.controller.current_time if self.controller is not None else 0.0
+        last_time = self.controller.times[-1] if self.controller is not None and self.controller.times else 0.0
+        playback_speed = self.controller.playback_speed if self.controller is not None else 0.0
+        frames_skipped = self.controller.frames_skipped if self.controller is not None else 0
         self._updating = True
         try:
             self.slider.setValue(current_frame)
             self.frame_spin.setValue(current_frame)
+            self.speed_spin.setValue(float(playback_speed))
+            self.skipped_spin.setValue(int(frames_skipped))
+            playing = bool(self.controller is not None and self.controller.is_playing)
+            self.play_button.setChecked(playing)
+            self.play_button.setText("Pause" if playing else "Play")
+            self.play_button.setToolTip("Pause" if playing else "Play")
         finally:
             self._updating = False
         maximum = max(source_frame_count - 1, 0)
         self.frame_count_label.setText(f"/ {maximum}")
-        self.time_label.setText(f"{current_time:.6g} s")
+        self.time_label.setText(f"{current_time:.6g} / {last_time:.6g} s")
+
+    def _toggle_playback(self, checked=False):
+        if checked:
+            self._play()
+        else:
+            self._pause()
 
     def _play(self):
         if self.controller is None or self.controller.frame_count == 0:
+            self._refresh()
             return
         if self.controller.current_frame < self.controller.start_frame or self.controller.current_frame > self.controller.end_frame:
             self.controller.setFrame(self.controller.start_frame)
-        interval = max(int(1000.0 / self.controller.update_rate), 1)
-        self.controller.is_playing = True
+        interval = max(int(1000.0 / self.controller.frame_rate), 1)
+        self.controller.beginPlayback()
         self._timer.start(interval)
+        self._refresh()
 
     def _pause(self):
         self._timer.stop()
@@ -276,10 +333,22 @@ class AnimationTaskPanel:
             self.controller.pause()
         self._refresh()
 
-    def _stop(self):
+    def _input_frame(self):
+        self._pause()
+        if self.controller is not None:
+            self.controller.setFrame(0)
+        self._refresh()
+
+    def _first_frame(self):
         self._pause()
         if self.controller is not None:
             self.controller.stop()
+        self._refresh()
+
+    def _last_frame(self):
+        self._pause()
+        if self.controller is not None:
+            self.controller.setFrame(self.controller.end_frame)
         self._refresh()
 
     def _tick(self):
@@ -329,12 +398,8 @@ class AnimationTaskPanel:
         self._configure_frame_controls()
         self._refresh()
 
-    def _set_speed(self, value):
-        if self._updating:
-            return
-        self.animation_parameters.playbackSpeed = float(value)
-
     def _set_scale(self, value):
+        self.animation_parameters.lengthScale = float(value)
         if self.controller is not None:
             self.controller.length_scale = float(value)
             self.controller.setFrame(self.controller.current_frame)
@@ -343,10 +408,6 @@ class AnimationTaskPanel:
     def _set_loop(self, checked):
         if not self._updating:
             self.animation_parameters.loop = bool(checked)
-
-    def _set_interpolate(self, checked):
-        if not self._updating:
-            self.animation_parameters.interpolateFrames = bool(checked)
 
 
 class AnimationParametersSelectionObserver:

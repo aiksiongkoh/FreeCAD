@@ -10,6 +10,9 @@ set(MbDFEM_Scripts
     FreeCADMbDAnimationPanel.py
     FreeCADMbDBackend.py
     FreeCADMbDExporter.py
+    FreeCADMbDFEMCLOADs.py
+    FreeCADMbDFEMDLOADs.py
+    FreeCADMbDFreeBodyDiagram.py
     FreeCADMbDFEMEmbedded.py
     FreeCADMbDFEMResultsPanel.py
     FreeCADMbDMassMarkerPanel.py
@@ -22,6 +25,7 @@ set(MbDFEM_Scripts
 
 set(MbDFEM_Examples
     Examples/CreateMbDFEMModel.py
+    Examples/CreateRealisticPendulumMbD.py
 )
 
 set(MbDFEM_Ui

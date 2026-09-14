@@ -31,7 +31,7 @@ public:
     App::PropertyLink massMarker;
     App::PropertyVector velocity;
     App::PropertyVector omega;  // Angular velocity of part in global coordinates
-    App::PropertyVector acceleration;
+    App::PropertyVector acceleration;  // Linear acceleration of part in global coordinates, mm/s^2
     App::PropertyVector alpha;  // Angular acceleration of part in global coordinates
     App::PropertyFloatList xs;
     App::PropertyFloatList ys;
@@ -83,7 +83,9 @@ public:
 
 private:
     App::PropertyLink _markersFolder;
+    bool _normalizingShape {false};
 
+    bool normalizeShapeToOneSolid();
     App::DocumentObjectGroup* ensureMarkersFolder();
 };
 

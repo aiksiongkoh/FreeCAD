@@ -9,7 +9,10 @@ import FreeCAD
 import MatGui
 import PartGui
 import MbDFEMGui
+import FreeCADMbDFEMCLOADs
 import FreeCADMbDFEMEmbedded
+import FreeCADMbDFEMDLOADs
+import FreeCADMbDFreeBodyDiagram
 import FreeCADMbDAnimationPanel
 import FreeCADMbDSimulationPanel
 
@@ -18,6 +21,7 @@ FreeCAD.__unit_test__ += ["TestMbDFEMGui"]
 _animation_parameters_selection_observer = None
 _simulation_parameters_selection_observer = None
 _embedded_fem_part_view_provider_observer = None
+_true_mesh_view_states = {}
 
 try:
     if _animation_parameters_selection_observer is not None:
@@ -595,6 +599,7 @@ def _install_embedded_fem_part_solver_view_provider(view_object):
 
 
 def _install_embedded_fem_part_mesh_view_provider(view_object):
+    FreeCADMbDFEMEmbedded.install_mesh_task_panel_report_view_override()
     return False
 
 
@@ -1288,18 +1293,159 @@ class CreateFEMPartMeshCommand:
 
     @staticmethod
     def _remove_from_owner_groups(object_):
-        _remove_from_owner_groups(object_)
+        for owner in list(getattr(object_, "InList", [])):
+            try:
+                if hasattr(owner, "removeObject"):
+                    owner.removeObject(object_)
+            except Exception:
+                pass
 
     @staticmethod
     def _shape_copy(source_part):
-        return _shape_copy(source_part)
+        import FreeCAD as App
+
+        try:
+            shape = source_part.Shape
+        except Exception:
+            return None
+
+        if shape is None:
+            return None
+        try:
+            if shape.isNull():
+                return None
+        except Exception:
+            pass
+        try:
+            shape = shape.copy()
+        except Exception:
+            pass
+        try:
+            shape.Placement = App.Placement()
+        except Exception:
+            pass
+        return shape
 
     def _make_mesh_shape_proxy(self, fem_part):
-        return _make_mesh_shape_proxy(fem_part)
+        shape = self._shape_copy(fem_part)
+        if shape is None:
+            raise ValueError("Selected FEMPart has no shape to mesh")
+
+        shape_proxy = fem_part.Document.addObject("Part::Feature", fem_part.Name + "_MeshShape")
+        shape_proxy.Label = f"Mesh Shape ({fem_part.Label})"
+        shape_proxy.Shape = shape
+        try:
+            shape_proxy.ViewObject.Visibility = False
+        except Exception:
+            pass
+        try:
+            shape_proxy.ViewObject.ShowInTree = False
+        except Exception:
+            pass
+        self._remove_from_owner_groups(shape_proxy)
+        return shape_proxy
 
     @staticmethod
     def _hide_mesh_shape(mesh):
-        _hide_mesh_shape(mesh)
+        shape = getattr(mesh, "Shape", None)
+        view_object = getattr(shape, "ViewObject", None)
+        if view_object is None:
+            return
+        try:
+            view_object.Visibility = False
+        except Exception:
+            pass
+        try:
+            view_object.ShowInTree = False
+        except Exception:
+            pass
+
+    @staticmethod
+    def _object_in_document(object_):
+        document = getattr(object_, "Document", None)
+        name = getattr(object_, "Name", "")
+        if document is None or not name:
+            return False
+        try:
+            return document.getObject(name) is object_
+        except Exception:
+            return False
+
+    @classmethod
+    def _is_owned_fem_mesh(cls, fem_part, object_):
+        if object_ is None or not cls._object_in_document(object_):
+            return False
+        try:
+            if object_.TypeId != "Fem::FemMeshShapeBaseObjectPython":
+                return False
+        except Exception:
+            return False
+        try:
+            if object_ is fem_part.mesh or object_ in fem_part.Group:
+                return True
+        except Exception:
+            pass
+        if object_ is getattr(fem_part, "mesh", None):
+            return True
+        try:
+            if object_.Name.startswith(fem_part.Name + "_Mesh"):
+                return True
+        except Exception:
+            pass
+        try:
+            return object_.Label.startswith(f"Mesh ({fem_part.Label})")
+        except Exception:
+            return False
+
+    @classmethod
+    def _is_mesh_shape_proxy(cls, fem_part, object_):
+        if object_ is None or not cls._object_in_document(object_):
+            return False
+        try:
+            if object_.TypeId != "Part::Feature":
+                return False
+        except Exception:
+            return False
+        try:
+            return object_.Name.startswith(fem_part.Name + "_MeshShape")
+        except Exception:
+            return False
+
+    @staticmethod
+    def _append_unique(objects, object_):
+        if object_ is not None and object_ not in objects:
+            objects.append(object_)
+
+    def _delete_existing_mesh(self, fem_part):
+        document = fem_part.Document
+        meshes = []
+        current_mesh = getattr(fem_part, "mesh", None)
+        if self._is_owned_fem_mesh(fem_part, current_mesh):
+            self._append_unique(meshes, current_mesh)
+        for child in list(getattr(fem_part, "Group", [])):
+            if self._is_owned_fem_mesh(fem_part, child):
+                self._append_unique(meshes, child)
+        for object_ in list(getattr(document, "Objects", [])):
+            if self._is_owned_fem_mesh(fem_part, object_):
+                self._append_unique(meshes, object_)
+
+        shape_proxies = []
+        for mesh in meshes:
+            shape_proxy = getattr(mesh, "Shape", None)
+            if self._is_mesh_shape_proxy(fem_part, shape_proxy):
+                self._append_unique(shape_proxies, shape_proxy)
+
+        for mesh in meshes:
+            if not self._object_in_document(mesh):
+                continue
+            self._remove_from_owner_groups(mesh)
+            document.removeObject(mesh.Name)
+
+        for shape_proxy in shape_proxies:
+            if not self._object_in_document(shape_proxy):
+                continue
+            self._remove_from_owner_groups(shape_proxy)
+            document.removeObject(shape_proxy.Name)
 
     @staticmethod
     def _expand_mesh_tree_item(mesh):
@@ -1319,7 +1465,26 @@ class CreateFEMPartMeshCommand:
             pass
 
     def createMesh(self, fem_part):
-        return _create_fem_part_mesh(fem_part)
+        import FreeCAD as App
+        import ObjectsFem
+        from femmesh import gmshtools
+
+        self._delete_existing_mesh(fem_part)
+        shape_proxy = self._make_mesh_shape_proxy(fem_part)
+        mesh = ObjectsFem.makeMeshGmsh(fem_part.Document, fem_part.Name + "_Mesh")
+        mesh.Label = f"Mesh ({fem_part.Label})"
+        mesh.Shape = shape_proxy
+        mesh.ElementOrder = "2nd"
+        mesh.SecondOrderLinear = False
+        self._remove_from_owner_groups(mesh)
+        mesh.Placement = App.Placement()
+        fem_part.mesh = mesh
+        fem_part.addObject(mesh)
+        gmsh_error = gmshtools.GmshTools(mesh).create_mesh()
+        self._hide_mesh_shape(mesh)
+        if gmsh_error:
+            App.Console.PrintError(f"MbDFEM Create Mesh: Gmsh failed: {gmsh_error}\n")
+        return mesh
 
     def Activated(self):
         import FreeCAD as App
@@ -1349,6 +1514,239 @@ class CreateFEMPartMeshCommand:
 
 
 Gui.addCommand("MbDFEM_CreateFEMPartMesh", CreateFEMPartMeshCommand())
+
+
+class ShowFEMPartTrueMeshCommand:
+    """Command that toggles the FEMPart mesh with internal faces enabled."""
+
+    def GetResources(self):
+        return {
+            "MenuText": "Show True Mesh",
+            "ToolTip": "Show the selected FEMPart's complete FEM mesh in the 3D view",
+        }
+
+    def IsActive(self):
+        import FreeCAD as App
+
+        return App.ActiveDocument is not None
+
+    @staticmethod
+    def _view_state_key(fem_part):
+        document = getattr(fem_part, "Document", None)
+        return (getattr(document, "Name", ""), getattr(fem_part, "Name", ""))
+
+    @staticmethod
+    def _get_view_property(view_object, name):
+        try:
+            if hasattr(view_object, name):
+                return getattr(view_object, name)
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _set_view_property(view_object, name, value):
+        try:
+            if hasattr(view_object, name):
+                setattr(view_object, name, value)
+        except Exception:
+            pass
+
+    @classmethod
+    def _capture_view_state(cls, fem_part, mesh, visual):
+        fem_part_view = getattr(fem_part, "ViewObject", None)
+        mesh_view = getattr(mesh, "ViewObject", None)
+        visual_view = getattr(visual, "ViewObject", None)
+        return {
+            "fem_part": fem_part,
+            "mesh": mesh,
+            "visual": visual,
+            "fem_part_visibility": cls._get_view_property(fem_part, "Visibility"),
+            "fem_part_view_visibility": cls._get_view_property(fem_part_view, "Visibility"),
+            "fem_part_transparency": cls._get_view_property(fem_part_view, "Transparency"),
+            "mesh_visibility": cls._get_view_property(mesh, "Visibility"),
+            "mesh_view_visibility": cls._get_view_property(mesh_view, "Visibility"),
+            "mesh_show_inner": cls._get_view_property(mesh_view, "ShowInner"),
+            "mesh_max_faces_show_inner": cls._get_view_property(mesh_view, "MaxFacesShowInner"),
+            "mesh_backface_culling": cls._get_view_property(mesh_view, "BackfaceCulling"),
+            "mesh_line_width": cls._get_view_property(mesh_view, "LineWidth"),
+            "mesh_point_size": cls._get_view_property(mesh_view, "PointSize"),
+            "mesh_display_mode": cls._get_view_property(mesh_view, "DisplayMode"),
+            "visual_view_visibility": cls._get_view_property(visual_view, "Visibility"),
+        }
+
+    @classmethod
+    def _restore_property(cls, target, name, state, key):
+        if state.get(key) is not None:
+            cls._set_view_property(target, name, state[key])
+
+    @classmethod
+    def _restore_true_mesh(cls, state):
+        import FreeCAD as App
+        import FreeCADGui as Gui
+
+        fem_part = state.get("fem_part")
+        mesh = state.get("mesh")
+        visual = state.get("visual")
+        fem_part_view = getattr(fem_part, "ViewObject", None)
+        mesh_view = getattr(mesh, "ViewObject", None)
+        visual_view = getattr(visual, "ViewObject", None)
+
+        cls._restore_property(fem_part, "Visibility", state, "fem_part_visibility")
+        cls._restore_property(fem_part_view, "Visibility", state, "fem_part_view_visibility")
+        cls._restore_property(fem_part_view, "Transparency", state, "fem_part_transparency")
+        cls._restore_property(mesh, "Visibility", state, "mesh_visibility")
+        cls._restore_property(mesh_view, "Visibility", state, "mesh_view_visibility")
+        cls._restore_property(mesh_view, "ShowInner", state, "mesh_show_inner")
+        cls._restore_property(
+            mesh_view,
+            "MaxFacesShowInner",
+            state,
+            "mesh_max_faces_show_inner",
+        )
+        cls._restore_property(mesh_view, "BackfaceCulling", state, "mesh_backface_culling")
+        cls._restore_property(mesh_view, "LineWidth", state, "mesh_line_width")
+        cls._restore_property(mesh_view, "PointSize", state, "mesh_point_size")
+        cls._restore_property(mesh_view, "DisplayMode", state, "mesh_display_mode")
+        cls._restore_property(visual_view, "Visibility", state, "visual_view_visibility")
+
+        document = getattr(fem_part, "Document", None)
+        if document is not None:
+            document.recompute()
+
+        Gui.Selection.clearSelection()
+        if fem_part is not None:
+            Gui.Selection.addSelection(fem_part)
+        App.Console.PrintMessage("MbDFEM Show True Mesh: restored previous view.\n")
+
+    @staticmethod
+    def _mesh_counts(mesh):
+        fem_mesh = getattr(mesh, "FemMesh", None)
+        if fem_mesh is None:
+            return ""
+
+        counts = []
+        for label, attribute in (
+            ("nodes", "NodeCount"),
+            ("volumes", "VolumeCount"),
+            ("faces", "FaceCount"),
+            ("edges", "EdgeCount"),
+        ):
+            try:
+                counts.append(f"{getattr(fem_mesh, attribute)} {label}")
+            except Exception:
+                pass
+        return ", ".join(counts)
+
+    @staticmethod
+    def _is_fem_part(object_):
+        try:
+            return object_ is not None and object_.isDerivedFrom("MbDFEM::FEMPart")
+        except Exception:
+            return False
+
+    @classmethod
+    def _fem_part_from_selection(cls):
+        import FreeCAD as App
+        import FreeCADGui as Gui
+
+        document = App.ActiveDocument
+        if document is None:
+            return None
+
+        try:
+            selection = Gui.Selection.getSelectionEx(document.Name)
+        except Exception:
+            selection = []
+
+        selected_objects = []
+        for selected in selection:
+            selected_objects.append(getattr(selected, "Object", None))
+
+        for object_ in selected_objects:
+            if cls._is_fem_part(object_):
+                return object_
+
+        for object_ in selected_objects:
+            for owner in getattr(object_, "InList", []):
+                if cls._is_fem_part(owner) and getattr(owner, "mesh", None) is object_:
+                    return owner
+
+        return None
+
+    @classmethod
+    def _show_true_mesh(cls, fem_part):
+        import FreeCAD as App
+        import FreeCADGui as Gui
+        global _true_mesh_view_states
+
+        mesh = getattr(fem_part, "mesh", None)
+        if mesh is None:
+            raise ValueError("Selected FEMPart has no mesh. Create the mesh first.")
+
+        view_object = getattr(mesh, "ViewObject", None)
+        if view_object is None:
+            raise ValueError("Selected FEMPart mesh has no view object.")
+
+        key = cls._view_state_key(fem_part)
+        if key in _true_mesh_view_states:
+            cls._restore_true_mesh(_true_mesh_view_states.pop(key))
+            return mesh
+
+        visual = getattr(fem_part, "visual", None)
+        _true_mesh_view_states[key] = cls._capture_view_state(fem_part, mesh, visual)
+
+        cls._set_view_property(fem_part, "Visibility", True)
+        cls._set_view_property(getattr(fem_part, "ViewObject", None), "Visibility", True)
+        cls._set_view_property(getattr(fem_part, "ViewObject", None), "Transparency", 85)
+
+        cls._set_view_property(getattr(visual, "ViewObject", None), "Visibility", False)
+
+        cls._set_view_property(mesh, "Visibility", True)
+        cls._set_view_property(view_object, "Visibility", True)
+        cls._set_view_property(view_object, "ShowInner", True)
+        cls._set_view_property(view_object, "MaxFacesShowInner", 1000000)
+        cls._set_view_property(view_object, "BackfaceCulling", False)
+        cls._set_view_property(view_object, "LineWidth", 1.0)
+        cls._set_view_property(view_object, "PointSize", 3.0)
+
+        try:
+            view_object.DisplayMode = "Wireframe & Nodes"
+        except Exception:
+            try:
+                view_object.DisplayMode = "Faces, Wireframe & Nodes"
+            except Exception:
+                pass
+
+        document = getattr(fem_part, "Document", None)
+        if document is not None:
+            document.recompute()
+
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(mesh)
+
+        counts = cls._mesh_counts(mesh)
+        if counts:
+            App.Console.PrintMessage(f"MbDFEM Show True Mesh: {counts}.\n")
+        else:
+            App.Console.PrintMessage("MbDFEM Show True Mesh: mesh displayed.\n")
+        return mesh
+
+    def Activated(self):
+        import FreeCAD as App
+
+        fem_part = self._fem_part_from_selection()
+        if fem_part is None:
+            App.Console.PrintError("Select a FEMPart or its Mesh child.\n")
+            return
+
+        try:
+            self._show_true_mesh(fem_part)
+        except Exception as exc:
+            App.Console.PrintError(f"MbDFEM Show True Mesh failed: {exc}\n")
+
+
+Gui.addCommand("MbDFEM_ShowFEMPartTrueMesh", ShowFEMPartTrueMeshCommand())
 
 
 class CreateMbDMarkerCommand:
@@ -2166,6 +2564,9 @@ Gui.addCommand(
     "MbDFEM_SetMassMarkerMaterial",
     SetMassMarkerMaterialCommand(SetMassMarkerMaterialTaskPanel),
 )
+FreeCADMbDFEMCLOADs.install()
+FreeCADMbDFEMDLOADs.install()
+FreeCADMbDFreeBodyDiagram.install()
 
 
 class SolveMbDAssemblyTaskPanel:
@@ -2452,6 +2853,12 @@ class MbDFEMWorkbench(Gui.Workbench):
         ]
         menu_commands = [
             *toolbar_commands,
+            "MbDFEM_ShowFEMPartTrueMesh",
+            "MbDFEM_ShowFEMPartCLOADFaces",
+            "MbDFEM_ShowFEMPartCLOADs",
+            "MbDFEM_ShowFEMPartDLOADElements",
+            "MbDFEM_ShowFEMPartDLOADs",
+            "MbDFEM_FreeBodyDiagram",
         ]
         self.appendToolbar("MbDFEM", toolbar_commands)
         self.appendMenu("MbDFEM", menu_commands)
