@@ -2,6 +2,9 @@
 
 """Task panel for solving FEMPart result states over an MbD time series."""
 
+import math
+import sys
+
 import FreeCAD as App
 
 import FreeCADMbDAnimation
@@ -12,6 +15,66 @@ import FreeCADMbDFEMEmbedded
 _STATE_INDEX_PROPERTY = "MbDFEMStateIndex"
 _STATE_TIME_PROPERTY = "MbDFEMStateTime"
 _DEFAULT_PIPELINE_FIELD = "von Mises Stress"
+_PIPELINE_SCALAR_FIELD_PROPERTIES = {
+    "Displacement Magnitude": "DisplacementLengths",
+    "von Mises Stress": "vonMises",
+    "Major Principal Stress": "PrincipalMax",
+    "Intermediate Principal Stress": "PrincipalMed",
+    "Minor Principal Stress": "PrincipalMin",
+    "Tresca Stress": "MaxShear",
+    "Stress xx component": "NodeStressXX",
+    "Stress yy component": "NodeStressYY",
+    "Stress zz component": "NodeStressZZ",
+    "Stress xy component": "NodeStressXY",
+    "Stress xz component": "NodeStressXZ",
+    "Stress yz component": "NodeStressYZ",
+}
+_FRD_STRESS_COMPONENT_INDEX = {
+    "Stress xx component": 0,
+    "Stress yy component": 1,
+    "Stress zz component": 2,
+    "Stress xy component": 3,
+    "Stress xz component": 4,
+    "Stress yz component": 5,
+}
+_PIPELINE_FIELD_SCALE = {
+    "Displacement Magnitude": 0.001,
+    "von Mises Stress": 1.0e6,
+    "Major Principal Stress": 1.0e6,
+    "Intermediate Principal Stress": 1.0e6,
+    "Minor Principal Stress": 1.0e6,
+    "Tresca Stress": 1.0e6,
+    "Stress xx component": 1.0e6,
+    "Stress yy component": 1.0e6,
+    "Stress zz component": 1.0e6,
+    "Stress xy component": 1.0e6,
+    "Stress xz component": 1.0e6,
+    "Stress yz component": 1.0e6,
+}
+_PIPELINE_FIELD_DISPLAY_UNITS = {
+    "Displacement Magnitude": "m",
+    "von Mises Stress": "Pa",
+    "Major Principal Stress": "Pa",
+    "Intermediate Principal Stress": "Pa",
+    "Minor Principal Stress": "Pa",
+    "Tresca Stress": "Pa",
+    "Stress xx component": "Pa",
+    "Stress yy component": "Pa",
+    "Stress zz component": "Pa",
+    "Stress xy component": "Pa",
+    "Stress xz component": "Pa",
+    "Stress yz component": "Pa",
+}
+_FRD_SCALAR_RANGE_CACHE = {}
+_FIXED_COLOR_RANGE_ENABLED_PROPERTY = "MbDFEMFixedColorBarRangeEnabled"
+_FIXED_COLOR_RANGE_MINIMUM_PROPERTY = "MbDFEMFixedColorBarMinimum"
+_FIXED_COLOR_RANGE_MAXIMUM_PROPERTY = "MbDFEMFixedColorBarMaximum"
+_FIXED_COLOR_RANGE_FIELD_PROPERTY = "MbDFEMFixedColorBarField"
+_RESULTS_PANEL_STATE_PROPERTIES = {
+    "current": "MbDFEMResultsPanelCurrentState",
+    "start": "MbDFEMResultsPanelStartState",
+    "end": "MbDFEMResultsPanelEndState",
+}
 
 
 def owning_fem_part(results_folder):
@@ -118,6 +181,16 @@ def _result_for_state(fem_part, state_index, base_results=None):
     return None
 
 
+def _is_result_series(fem_part):
+    return state_count(fem_part) > 1
+
+
+def _include_state_in_legend_scale(fem_part, state_index):
+    if state_index is None:
+        return True
+    return not (_is_result_series(fem_part) and int(state_index) == 0)
+
+
 def _ordered_results_for_storage(results):
     def sort_key(item):
         fallback_index, result = item
@@ -212,6 +285,341 @@ def _pipeline_field_name(pipeline):
     return "" if value == "None" else value
 
 
+def _result_scalar_values(result, field_name):
+    prop_name = _PIPELINE_SCALAR_FIELD_PROPERTIES.get(field_name)
+    if not prop_name:
+        return []
+    try:
+        return list(getattr(result, prop_name, []))
+    except Exception:
+        return []
+
+
+def _finite_min_max(values):
+    finite_values = []
+    for value in values:
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(value):
+            finite_values.append(value)
+    if not finite_values:
+        return None
+    return min(finite_values), max(finite_values)
+
+
+def _pipeline_field_scale(field_name):
+    return _PIPELINE_FIELD_SCALE.get(field_name, 1.0)
+
+
+def _pipeline_field_display_label(field_name):
+    unit = _PIPELINE_FIELD_DISPLAY_UNITS.get(field_name)
+    return f"{field_name} [{unit}]" if unit else field_name
+
+
+def _decorate_pipeline_field_combo(combo_box):
+    try:
+        from PySide import QtCore
+    except Exception:
+        QtCore = None
+
+    role = QtCore.Qt.UserRole if QtCore is not None else 0x0100
+    for index in range(combo_box.count()):
+        field_name = combo_box.itemData(index, role)
+        if not field_name:
+            field_name = combo_box.itemText(index)
+            combo_box.setItemData(index, field_name, role)
+        combo_box.setItemText(index, _pipeline_field_display_label(str(field_name)))
+
+
+def _pipeline_field_combo_value(combo_box):
+    try:
+        from PySide import QtCore
+
+        value = combo_box.itemData(combo_box.currentIndex(), QtCore.Qt.UserRole)
+        return str(value) if value else combo_box.currentText()
+    except Exception:
+        return ""
+
+
+def _scaled_min_max(values, field_name):
+    value_range = _finite_min_max(values)
+    if value_range is None:
+        return None
+    scale = _pipeline_field_scale(field_name)
+    return value_range[0] * scale, value_range[1] * scale
+
+
+def _von_mises_from_stress(stress):
+    sxx, syy, szz, sxy, sxz, syz = [float(value) for value in stress]
+    return math.sqrt(
+        (
+            (sxx - syy) ** 2
+            + (syy - szz) ** 2
+            + (szz - sxx) ** 2
+            + 6.0 * (sxy**2 + sxz**2 + syz**2)
+        )
+        / 2.0
+    )
+
+
+def _frd_scalar_values_for_result_set(result_set, field_name):
+    if field_name == "Displacement Magnitude":
+        values = []
+        for vector in getattr(result_set.get("disp", {}), "values", lambda: [])():
+            try:
+                values.append(float(vector.Length))
+            except Exception:
+                try:
+                    values.append(math.sqrt(sum(float(component) ** 2 for component in vector)))
+                except Exception:
+                    pass
+        return values
+
+    stresses = list(getattr(result_set.get("stress", {}), "values", lambda: [])())
+    if field_name == "von Mises Stress":
+        values = []
+        for stress in stresses:
+            try:
+                values.append(_von_mises_from_stress(stress))
+            except Exception:
+                pass
+        return values
+
+    component = _FRD_STRESS_COMPONENT_INDEX.get(field_name)
+    if component is not None:
+        values = []
+        for stress in stresses:
+            try:
+                values.append(float(stress[component]))
+            except Exception:
+                pass
+        return values
+
+    return []
+
+
+def _read_frd_result_sets(frd_file):
+    from feminout import importCcxFrdResults
+
+    return importCcxFrdResults.read_frd_result(str(frd_file)).get("Results", [])
+
+
+def _frd_file_for_state(fem_part, state_index):
+    working_dir = FreeCADMbDBackend.calculix_working_dir_path(fem_part, state_index)
+    return working_dir / f"{FreeCADMbDBackend.CALCULIX_BASE_NAME}.frd"
+
+
+def _frd_scalar_range(frd_file, field_name):
+    try:
+        stat = frd_file.stat()
+    except OSError:
+        return None
+
+    key = (str(frd_file), field_name, stat.st_mtime_ns, stat.st_size)
+    if key in _FRD_SCALAR_RANGE_CACHE:
+        return _FRD_SCALAR_RANGE_CACHE[key]
+
+    try:
+        values = []
+        for result_set in _read_frd_result_sets(frd_file):
+            values.extend(_frd_scalar_values_for_result_set(result_set, field_name))
+        value_range = _scaled_min_max(values, field_name)
+    except Exception as exc:
+        App.Console.PrintWarning(f"Unable to read FEM result range from {frd_file}: {exc}\n")
+        value_range = None
+
+    _FRD_SCALAR_RANGE_CACHE[key] = value_range
+    return value_range
+
+
+def _solved_frd_scalar_ranges(fem_part, field_name):
+    count = state_count(fem_part)
+    ranges = []
+    for state_index in range(count):
+        if not _include_state_in_legend_scale(fem_part, state_index):
+            continue
+        frame_range = _frd_scalar_range(_frd_file_for_state(fem_part, state_index), field_name)
+        if frame_range is not None:
+            ranges.append(frame_range)
+    return ranges
+
+
+def _global_pipeline_scalar_range(fem_part, field_name):
+    ranges = []
+    for fallback_index, result in enumerate(_linked_results(fem_part)):
+        if not _include_state_in_legend_scale(
+            fem_part,
+            _result_state_index(result, fallback_index),
+        ):
+            continue
+        frame_range = _scaled_min_max(_result_scalar_values(result, field_name), field_name)
+        if frame_range is not None:
+            ranges.append(frame_range)
+    ranges.extend(_solved_frd_scalar_ranges(fem_part, field_name))
+    if not ranges:
+        return None
+    minimum = min(frame_range[0] for frame_range in ranges)
+    maximum = max(frame_range[1] for frame_range in ranges)
+    if minimum == maximum:
+        padding = abs(minimum) * 0.01 or 1.0
+        minimum -= padding
+        maximum += padding
+    return minimum, maximum
+
+
+def _set_pipeline_fixed_color_range(pipeline, value_range):
+    view_object = getattr(pipeline, "ViewObject", None)
+    if view_object is None:
+        return
+
+    def post_objects():
+        objects = [pipeline]
+        try:
+            objects.extend(list(getattr(pipeline, "Group", [])))
+        except Exception:
+            pass
+        return [obj for obj in objects if obj is not None]
+
+    def ensure_app_property(obj, property_type, name):
+        if hasattr(obj, name):
+            return
+        try:
+            obj.addProperty(
+                property_type,
+                name,
+                "MbDFEM",
+                "Fixed color bar range used by MbDFEM animated result display.",
+            )
+        except Exception:
+            pass
+
+    def set_app_range(value_range):
+        field_name = _pipeline_field_name(pipeline) or _DEFAULT_PIPELINE_FIELD
+        for obj in post_objects():
+            ensure_app_property(obj, "App::PropertyBool", _FIXED_COLOR_RANGE_ENABLED_PROPERTY)
+            ensure_app_property(obj, "App::PropertyFloat", _FIXED_COLOR_RANGE_MINIMUM_PROPERTY)
+            ensure_app_property(obj, "App::PropertyFloat", _FIXED_COLOR_RANGE_MAXIMUM_PROPERTY)
+            ensure_app_property(obj, "App::PropertyString", _FIXED_COLOR_RANGE_FIELD_PROPERTY)
+            try:
+                setattr(obj, _FIXED_COLOR_RANGE_FIELD_PROPERTY, field_name)
+                if value_range is None:
+                    setattr(obj, _FIXED_COLOR_RANGE_ENABLED_PROPERTY, False)
+                    continue
+                minimum, maximum = value_range
+                setattr(obj, _FIXED_COLOR_RANGE_MINIMUM_PROPERTY, float(minimum))
+                setattr(obj, _FIXED_COLOR_RANGE_MAXIMUM_PROPERTY, float(maximum))
+                setattr(obj, _FIXED_COLOR_RANGE_ENABLED_PROPERTY, True)
+            except Exception as exc:
+                App.Console.PrintWarning(
+                    "MbDFEM: unable to update fixed color range on "
+                    f"{getattr(obj, 'Name', '<unnamed>')}: {exc}\n"
+                )
+
+    def set_view_property(name, value):
+        try:
+            view_object.setPropertyByName(name, value)
+            return True
+        except Exception:
+            pass
+        try:
+            setattr(view_object, name, value)
+            return True
+        except Exception:
+            return False
+
+    try:
+        set_app_range(value_range)
+        if value_range is None:
+            set_view_property("UseFixedColorBarRange", False)
+        else:
+            minimum, maximum = value_range
+            set_view_property("FixedColorBarMinimum", float(minimum))
+            set_view_property("FixedColorBarMaximum", float(maximum))
+            set_view_property("UseFixedColorBarRange", True)
+    except Exception:
+        return
+
+    try:
+        pipeline.Document.recompute()
+    except Exception:
+        pass
+    try:
+        view_object.updateMaterial()
+    except Exception:
+        pass
+    try:
+        view_object.updateColorBars()
+    except Exception:
+        pass
+
+
+def _apply_global_pipeline_color_range(fem_part, pipeline, value_range=None):
+    field_name = _pipeline_field_name(pipeline) or _DEFAULT_PIPELINE_FIELD
+    if not field_name:
+        return
+    if value_range is None:
+        value_range = _global_pipeline_scalar_range(fem_part, field_name)
+    if value_range is None:
+        _set_pipeline_fixed_color_range(pipeline, None)
+        return
+    _set_pipeline_fixed_color_range(pipeline, value_range)
+
+
+def _refresh_pipeline_fixed_color_range(fem_part, pipeline, value_range=None):
+    _apply_global_pipeline_color_range(fem_part, pipeline, value_range=value_range)
+    _refresh_pipeline_legend(pipeline)
+
+
+def _apply_result_mesh_color_range(fem_part, result, value_range=None):
+    if result is None:
+        return
+    pipeline = getattr(fem_part, "visual", None)
+    field_name = _pipeline_field_name(pipeline) if pipeline is not None else _DEFAULT_PIPELINE_FIELD
+    attribute = _PIPELINE_SCALAR_FIELD_PROPERTIES.get(field_name)
+    if not attribute:
+        return
+    values = list(getattr(result, attribute, []))
+    node_numbers = list(getattr(result, "NodeNumbers", []))
+    if not values or len(values) != len(node_numbers):
+        return
+    scale = _pipeline_field_scale(field_name)
+    if scale != 1.0:
+        values = [float(value) * scale for value in values]
+    if value_range is None:
+        value_range = _global_pipeline_scalar_range(fem_part, field_name)
+    if value_range is None:
+        return
+    result_mesh = getattr(result, "Mesh", None)
+    mesh_view = getattr(result_mesh, "ViewObject", None)
+    if mesh_view is None:
+        return
+    minimum, maximum = value_range
+    try:
+        mesh_view.setNodeColorByScalars(node_numbers, values, float(minimum), float(maximum))
+    except TypeError:
+        mesh_view.setNodeColorByScalars(node_numbers, values)
+    except Exception:
+        pass
+
+
+def _schedule_pipeline_fixed_color_range_refresh(fem_part, pipeline, value_range=None):
+    try:
+        from PySide import QtCore
+    except Exception:
+        return
+
+    def refresh():
+        try:
+            _refresh_pipeline_fixed_color_range(fem_part, pipeline, value_range=value_range)
+        except Exception:
+            pass
+
+    QtCore.QTimer.singleShot(0, refresh)
+    QtCore.QTimer.singleShot(50, refresh)
+
+
 def _select_pipeline_field(pipeline, preferred_field=None):
     view_object = getattr(pipeline, "ViewObject", None)
     field = getattr(view_object, "Field", None)
@@ -233,6 +641,7 @@ def _select_pipeline_field(pipeline, preferred_field=None):
                 view_object.updateColorBars()
             except Exception:
                 pass
+            _refresh_pipeline_legend(pipeline)
             return candidate
     return _pipeline_field_name(pipeline)
 
@@ -304,13 +713,90 @@ def _ensure_visual_pipeline(fem_part, result, preferred_field=None):
             view_object.Visibility = True
         except Exception:
             pass
-        try:
-            view_object.updateColorBars()
-        except Exception:
-            pass
 
     _select_pipeline_field(pipeline, preferred_field)
+    _refresh_pipeline_fixed_color_range(fem_part, pipeline)
+    _schedule_pipeline_fixed_color_range_refresh(fem_part, pipeline)
     return pipeline
+
+
+def _refresh_pipeline_legend(pipeline):
+    view_object = getattr(pipeline, "ViewObject", None)
+    if view_object is None:
+        return
+
+    try:
+        view_object.Visibility = True
+    except Exception:
+        pass
+    try:
+        view_object.show()
+    except Exception:
+        pass
+    try:
+        view_object.updateMaterial()
+    except Exception:
+        pass
+    try:
+        view_object.updateColorBars()
+    except Exception:
+        pass
+    try:
+        import FreeCADGui as Gui
+
+        Gui.ActiveDocument.ActiveView.redraw()
+    except Exception:
+        pass
+
+
+def _remove_object_from_group(group, obj):
+    try:
+        if obj in list(getattr(group, "Group", [])):
+            group.removeObject(obj)
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _remove_result_from_foreign_groups(fem_part, result):
+    document = getattr(fem_part, "Document", None)
+    if document is None or result is None:
+        return
+
+    keep_groups = set()
+    try:
+        keep_groups.add(fem_part.getResultsFolder())
+    except Exception:
+        pass
+    keep_groups.discard(None)
+
+    for obj in list(getattr(document, "Objects", [])):
+        if obj in keep_groups:
+            continue
+        if obj is result:
+            continue
+        _remove_object_from_group(obj, result)
+
+
+def _discard_result_object(result):
+    document = getattr(result, "Document", None)
+    name = getattr(result, "Name", "")
+    mesh = getattr(result, "Mesh", None)
+    if document is None or not name:
+        return
+
+    try:
+        document.removeObject(name)
+    except Exception:
+        pass
+
+    mesh_name = getattr(mesh, "Name", "")
+    try:
+        if mesh_name and document.getObject(mesh_name) is not None:
+            document.removeObject(mesh_name)
+    except Exception:
+        pass
 
 
 def _assign_result_for_state(fem_part, state_index, result, base_results=None):
@@ -331,6 +817,9 @@ def _assign_result_for_state(fem_part, state_index, result, base_results=None):
         fem_part.synchronizeResultsFolder()
     except Exception:
         pass
+    _remove_result_from_foreign_groups(fem_part, result)
+    if existing is not None and existing is not result:
+        _discard_result_object(existing)
     return result
 
 
@@ -370,9 +859,51 @@ def solve_fem_part_state(fem_part, state_index, runner=None):
         result,
         base_results=before_results,
     )
-    time_value = _state_time(fem_part, state_index)
     try:
-        assigned.Label = f"{fem_part.Label} result {state_index} @ {time_value:.6g}s"
+        time_text = _state_label_time_text(fem_part, state_index)
+        assigned.Label = f"{fem_part.Label} result {state_index} @ {time_text}"
+    except Exception:
+        pass
+    _ensure_visual_pipeline(fem_part, assigned)
+    document.recompute()
+    return assigned
+
+
+def import_fem_part_state(fem_part, state_index, runner=None):
+    document = getattr(fem_part, "Document", None)
+    solver = getattr(fem_part, "solver", None)
+    if document is None:
+        raise ValueError("FEMPart is not attached to a document.")
+    if solver is None:
+        raise ValueError("FEMPart has no CalculiX solver.")
+
+    apply_state(fem_part, state_index)
+    before_results = _linked_results(fem_part)
+
+    if runner is None:
+        fea = FreeCADMbDFEMEmbedded.FEMPartCcxTools(fem_part, solver)
+        working_dir = FreeCADMbDBackend.default_calculix_working_dir(fem_part, state_index)
+        fea.setup_working_dir(str(working_dir))
+        fea.set_base_name(FreeCADMbDBackend.CALCULIX_BASE_NAME)
+        fea.setup_ccx()
+        fea.inp_file_name = str(working_dir / f"{FreeCADMbDBackend.CALCULIX_BASE_NAME}.inp")
+        frd_file = working_dir / f"{FreeCADMbDBackend.CALCULIX_BASE_NAME}.frd"
+        if not frd_file.is_file():
+            raise FileNotFoundError(f"CalculiX result file not found: {frd_file}")
+        fea.load_results_ccxfrd()
+        result = _new_result(before_results, fem_part)
+    else:
+        result = runner(fem_part, state_index)
+
+    assigned = _assign_result_for_state(
+        fem_part,
+        state_index,
+        result,
+        base_results=before_results,
+    )
+    try:
+        time_text = _state_label_time_text(fem_part, state_index)
+        assigned.Label = f"{fem_part.Label} imported result {state_index} @ {time_text}"
     except Exception:
         pass
     _ensure_visual_pipeline(fem_part, assigned)
@@ -388,6 +919,58 @@ def _state_time(fem_part, state_index):
     return float(state_index)
 
 
+def _is_input_state_time(value):
+    try:
+        return float(value) <= -sys.float_info.max * 0.999
+    except Exception:
+        return False
+
+
+def _state_time_text(fem_part, state_index):
+    value = _state_time(fem_part, state_index)
+    if _is_input_state_time(value):
+        return "Input"
+    return f"{value:.6g} s"
+
+
+def _state_label_time_text(fem_part, state_index):
+    value = _state_time(fem_part, state_index)
+    if _is_input_state_time(value):
+        return "Input"
+    return f"{value:.6g}s"
+
+
+def _clamped_results_panel_state(fem_part, key, default, maximum):
+    value = getattr(fem_part, _RESULTS_PANEL_STATE_PROPERTIES[key], default)
+    try:
+        value = int(value)
+    except Exception:
+        value = default
+    return max(0, min(value, maximum))
+
+
+def _set_results_panel_state(fem_part, key, value):
+    property_name = _RESULTS_PANEL_STATE_PROPERTIES[key]
+    if not hasattr(fem_part, property_name):
+        try:
+            fem_part.addProperty(
+                "App::PropertyInteger",
+                property_name,
+                "MbDFEM",
+                "Saved FEMPart results task panel state",
+            )
+        except Exception:
+            pass
+    try:
+        setattr(fem_part, property_name, int(value))
+    except Exception:
+        pass
+
+
+def _default_results_panel_start_state(maximum):
+    return 1 if maximum >= 1 else 0
+
+
 class FEMResultsTaskPanel:
     def __init__(self, results_folder):
         from PySide import QtCore, QtWidgets
@@ -397,6 +980,8 @@ class FEMResultsTaskPanel:
         self._updating = False
         self._stop_requested = False
         self._playing = False
+        self._playback_color_range = None
+        self._playback_color_field = ""
         self._suppress_fem_freshness_warning = False
 
         self._form_widget = QtWidgets.QWidget()
@@ -474,6 +1059,9 @@ class FEMResultsTaskPanel:
 
         display_group = QtWidgets.QGroupBox("Display")
         display_layout = QtWidgets.QVBoxLayout(display_group)
+        self.field_label = QtWidgets.QLabel()
+        self.field_label.setObjectName("MbDFEMResultFieldLabel")
+        display_layout.addWidget(self.field_label)
         playback_layout = QtWidgets.QHBoxLayout()
         self.play_button = QtWidgets.QPushButton("Play")
         self.stop_playback_button = QtWidgets.QPushButton("Stop")
@@ -496,6 +1084,7 @@ class FEMResultsTaskPanel:
         self.form = [self._form_widget, *pipeline_widgets] if pipeline_widgets else self._form_widget
 
         self._configure()
+        self._load_panel_state()
         self._refresh()
 
     def getStandardButtons(self):
@@ -503,13 +1092,29 @@ class FEMResultsTaskPanel:
 
         return QtGui.QDialogButtonBox.Close
 
-    def reject(self):
-        import FreeCADGui as Gui
-
+    def accept(self):
         self._stop_solver()
         self._stop_playback()
-        Gui.Control.closeDialog()
+        self._save_panel_state()
         return True
+
+    def reject(self):
+        return self.accept()
+
+    def _panel_state_values(self):
+        maximum = max((state_count(self.fem_part) if self.fem_part is not None else 0) - 1, 0)
+        default_start = _default_results_panel_start_state(maximum)
+        return {
+            "current": _clamped_results_panel_state(self.fem_part, "current", 0, maximum)
+            if self.fem_part is not None
+            else 0,
+            "start": _clamped_results_panel_state(self.fem_part, "start", default_start, maximum)
+            if self.fem_part is not None
+            else 0,
+            "end": _clamped_results_panel_state(self.fem_part, "end", maximum, maximum)
+            if self.fem_part is not None
+            else maximum,
+        }
 
     def _configure(self):
         count = state_count(self.fem_part) if self.fem_part is not None else 0
@@ -520,8 +1125,6 @@ class FEMResultsTaskPanel:
             self.state_spin.setRange(0, maximum)
             self.start_state_spin.setRange(0, maximum)
             self.end_state_spin.setRange(0, maximum)
-            self.start_state_spin.setValue(0)
-            self.end_state_spin.setValue(maximum)
         finally:
             self._updating = False
         enabled = self.fem_part is not None and count > 0
@@ -536,6 +1139,57 @@ class FEMResultsTaskPanel:
         ):
             widget.setEnabled(enabled)
         self.stop_playback_button.setEnabled(False)
+
+    def _load_panel_state(self):
+        self._restore_panel_state(self._panel_state_values(), apply_current=True)
+
+    def _save_panel_state(self):
+        if self.fem_part is None:
+            return
+        for spin_box in (
+            self.state_spin,
+            self.start_state_spin,
+            self.end_state_spin,
+        ):
+            spin_box.interpretText()
+
+        self._write_panel_state(
+            {
+                "current": self.state_spin.value(),
+                "start": self.start_state_spin.value(),
+                "end": self.end_state_spin.value(),
+            }
+        )
+
+    def _write_panel_state(self, values):
+        if self.fem_part is None:
+            return
+        _set_results_panel_state(self.fem_part, "current", values["current"])
+        _set_results_panel_state(self.fem_part, "start", values["start"])
+        _set_results_panel_state(self.fem_part, "end", values["end"])
+
+    def _restore_panel_state(self, values, apply_current=False):
+        if self.fem_part is None:
+            return
+        maximum = max(state_count(self.fem_part) - 1, 0)
+        current = max(0, min(int(values["current"]), maximum))
+        start = max(0, min(int(values["start"]), maximum))
+        end = max(0, min(int(values["end"]), maximum))
+        if end < start:
+            start, end = end, start
+
+        self._updating = True
+        try:
+            self.slider.setValue(current)
+            self.state_spin.setValue(current)
+            self.start_state_spin.setValue(start)
+            self.end_state_spin.setValue(end)
+        finally:
+            self._updating = False
+        if apply_current and state_count(self.fem_part) > 0:
+            self._apply_current_state()
+        else:
+            self._refresh()
 
     def _refresh(self, message=None):
         count = state_count(self.fem_part) if self.fem_part is not None else 0
@@ -556,15 +1210,17 @@ class FEMResultsTaskPanel:
             self.status_label.setText(f"{self.fem_part.Label}: {solved} / {count} states solved")
 
         self.state_count_label.setText(f"/ {max(count - 1, 0)}")
-        self.time_label.setText(f"{_state_time(self.fem_part, index):.6g} s")
+        self.time_label.setText(_state_time_text(self.fem_part, index))
         self.start_state_count_label.setText(f"/ {max(count - 1, 0)}")
         self.end_state_count_label.setText(f"/ {max(count - 1, 0)}")
-        self.start_time_label.setText(
-            f"{_state_time(self.fem_part, self.start_state_spin.value()):.6g} s"
-        )
-        self.end_time_label.setText(
-            f"{_state_time(self.fem_part, self.end_state_spin.value()):.6g} s"
-        )
+        self.start_time_label.setText(_state_time_text(self.fem_part, self.start_state_spin.value()))
+        self.end_time_label.setText(_state_time_text(self.fem_part, self.end_state_spin.value()))
+        self._refresh_field_label()
+
+    def _refresh_field_label(self):
+        pipeline = getattr(self.fem_part, "visual", None) if self.fem_part is not None else None
+        field = _pipeline_field_name(pipeline) if pipeline is not None else _DEFAULT_PIPELINE_FIELD
+        self.field_label.setText(f"Field: {_pipeline_field_display_label(field)}" if field else "Field:")
 
     def _pipeline_for_task_panel(self):
         if self.fem_part is None:
@@ -598,23 +1254,51 @@ class FEMResultsTaskPanel:
                 App.Console.PrintWarning(
                     f"Unable to append FEM pipeline task widget {method_name}: {exc}\n"
                 )
-        return [widget for widget in widgets if widget is not None]
+        widgets = [widget for widget in widgets if widget is not None]
+        for widget in widgets:
+            self._connect_pipeline_task_widget(widget)
+        return widgets
+
+    def _connect_pipeline_task_widget(self, widget):
+        try:
+            from PySide import QtWidgets
+        except Exception:
+            return
+
+        for combo_box in widget.findChildren(QtWidgets.QComboBox):
+            if combo_box.objectName() not in ("Field", "VectorMode"):
+                continue
+            if combo_box.objectName() == "Field":
+                _decorate_pipeline_field_combo(combo_box)
+                slot = lambda *args, combo_box=combo_box: self._set_pipeline_from_task_panel(
+                    combo_box
+                )
+            else:
+                slot = lambda *args: self._set_pipeline_from_task_panel()
+            for signal_name in ("activated", "currentIndexChanged"):
+                try:
+                    signal = getattr(combo_box, signal_name)
+                    try:
+                        signal[int].connect(slot)
+                    except Exception:
+                        signal.connect(slot)
+                except Exception:
+                    pass
 
     def _refresh_pipeline_task_widgets(self):
         pipeline = getattr(self.fem_part, "visual", None)
         view_object = getattr(pipeline, "ViewObject", None)
         if view_object is None:
             return
-        for method_name in ("updateColorBars",):
-            method = getattr(view_object, method_name, None)
-            if method is None:
-                continue
-            try:
-                method()
-            except Exception:
-                pass
+        value_range = self._active_playback_color_range(pipeline)
+        _refresh_pipeline_fixed_color_range(self.fem_part, pipeline, value_range=value_range)
+        _schedule_pipeline_fixed_color_range_refresh(
+            self.fem_part,
+            pipeline,
+            value_range=value_range,
+        )
 
-    def _set_pipeline_from_task_panel(self):
+    def _set_pipeline_from_task_panel(self, combo_box=None, *args):
         pipeline = getattr(self.fem_part, "visual", None)
         if pipeline is None:
             return
@@ -622,11 +1306,46 @@ class FEMResultsTaskPanel:
         if view_object is None:
             return
         try:
-            field = _pipeline_field_name(pipeline)
+            field = ""
+            if getattr(combo_box, "objectName", lambda: "")() == "Field":
+                field = _pipeline_field_combo_value(combo_box)
+            if not field:
+                field = _pipeline_field_name(pipeline)
             if field:
                 _select_pipeline_field(pipeline, field)
+            if getattr(combo_box, "objectName", lambda: "")() == "Field":
+                _decorate_pipeline_field_combo(combo_box)
         except Exception:
             pass
+        self._playback_color_range = None
+        self._playback_color_field = ""
+        _refresh_pipeline_fixed_color_range(self.fem_part, pipeline)
+        _schedule_pipeline_fixed_color_range_refresh(self.fem_part, pipeline)
+        self._refresh_field_label()
+
+    def _active_playback_color_range(self, pipeline):
+        if not self._playing:
+            return None
+        if self._playback_color_field != _pipeline_field_name(pipeline):
+            return None
+        return self._playback_color_range
+
+    def _active_color_range(self, pipeline):
+        playback_range = self._active_playback_color_range(pipeline)
+        if playback_range is not None:
+            return playback_range
+        field = _pipeline_field_name(pipeline) or _DEFAULT_PIPELINE_FIELD
+        return _global_pipeline_scalar_range(self.fem_part, field) if field else None
+
+    def _freeze_playback_color_range(self):
+        pipeline = getattr(self.fem_part, "visual", None)
+        if pipeline is None:
+            return
+        field = _pipeline_field_name(pipeline)
+        self._playback_color_field = field
+        self._playback_color_range = (
+            _global_pipeline_scalar_range(self.fem_part, field) if field else None
+        )
 
     def _set_state(self, value):
         if self._updating:
@@ -637,6 +1356,8 @@ class FEMResultsTaskPanel:
             self.state_spin.setValue(int(value))
         finally:
             self._updating = False
+        if self.fem_part is not None:
+            _set_results_panel_state(self.fem_part, "current", value)
         self._apply_current_state()
 
     def _previous_state(self):
@@ -683,11 +1404,14 @@ class FEMResultsTaskPanel:
         self._playing = True
         self.play_button.setEnabled(False)
         self.stop_playback_button.setEnabled(True)
+        self._freeze_playback_color_range()
         self._set_state(indices[0])
         self._play_timer.start()
 
     def _stop_playback(self):
         self._playing = False
+        self._playback_color_range = None
+        self._playback_color_field = ""
         try:
             self._play_timer.stop()
         except RuntimeError:
@@ -725,6 +1449,13 @@ class FEMResultsTaskPanel:
 
         apply_state(self.fem_part, index)
         pipeline = _ensure_visual_pipeline(self.fem_part, current_result)
+        value_range = self._active_color_range(pipeline) if pipeline is not None else None
+        if pipeline is not None:
+            _refresh_pipeline_fixed_color_range(
+                self.fem_part,
+                pipeline,
+                value_range=value_range,
+            )
         self._refresh_pipeline_task_widgets()
         for result in _linked_results(self.fem_part):
             visible = result is current_result
@@ -748,6 +1479,20 @@ class FEMResultsTaskPanel:
                 visual_view.Visibility = pipeline is not None
             except Exception:
                 pass
+        if pipeline is not None:
+            _refresh_pipeline_fixed_color_range(
+                self.fem_part,
+                pipeline,
+                value_range=value_range,
+            )
+            _schedule_pipeline_fixed_color_range_refresh(
+                self.fem_part,
+                pipeline,
+                value_range=value_range,
+            )
+            _apply_result_mesh_color_range(self.fem_part, current_result, value_range=value_range)
+        else:
+            _apply_result_mesh_color_range(self.fem_part, current_result)
         return current_result
 
     def _run_state(self, index):
