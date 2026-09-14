@@ -79,3 +79,11 @@ tsupdate_stdout.log
 # pixi environments
 *.egg-info
 .pixi
+
+# MbDFEM local/generated solve artifacts
+/Document.xml
+/spooles.out
+/chats/
+mbdfem_frame.json
+/data/examples/RealisticPendulum/MbDFEM/Case001/*/Frame*/calculix.*
+/data/examples/RealisticPendulum/MbDFEM/Case001/*/Frame*/spooles.out
