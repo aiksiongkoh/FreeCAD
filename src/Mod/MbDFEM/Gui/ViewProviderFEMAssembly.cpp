@@ -2,18 +2,40 @@
 
 #include "ViewProviderFEMAssembly.h"
 
+#include <string>
+
 #include <QMenu>
 
 #include <Inventor/nodes/SoGroup.h>
 #include <Inventor/nodes/SoSeparator.h>
 #include <Inventor/nodes/SoSwitch.h>
 
+#include <App/Document.h>
 #include <App/PropertyGeo.h>
+#include <Base/Interpreter.h>
 #include <Mod/MbDFEM/App/FEMAssembly.h>
 
 #include "ViewProviderUtils.h"
 
 using namespace MbDFEMGui;
+
+namespace
+{
+
+std::string quotedPythonString(const char* value)
+{
+    std::string result = "'";
+    for (const char* cursor = value ? value : ""; *cursor; ++cursor) {
+        if (*cursor == '\\' || *cursor == '\'') {
+            result += '\\';
+        }
+        result += *cursor;
+    }
+    result += "'";
+    return result;
+}
+
+}  // namespace
 
 PROPERTY_SOURCE(MbDFEMGui::ViewProviderFEMAssembly, Gui::ViewProviderPart)
 
@@ -22,6 +44,26 @@ ViewProviderFEMAssembly::ViewProviderFEMAssembly()
     , childRoot(new SoGroup)
 {
     sPixmap = "Document";
+    ADD_PROPERTY_TYPE(DLOADAutoScale,
+                      (true),
+                      "MbDFEM",
+                      App::Prop_None,
+                      "Scale DLOAD arrows from assembly-wide result magnitudes");
+    ADD_PROPERTY_TYPE(DLOADScale,
+                      (1.0),
+                      "MbDFEM",
+                      App::Prop_None,
+                      "DLOAD arrow scale multiplier, or absolute scale when auto-scale is off");
+    ADD_PROPERTY_TYPE(CLOADAutoScale,
+                      (true),
+                      "MbDFEM",
+                      App::Prop_None,
+                      "Scale CLOAD arrows from assembly-wide result magnitudes");
+    ADD_PROPERTY_TYPE(CLOADScale,
+                      (1.0),
+                      "MbDFEM",
+                      App::Prop_None,
+                      "CLOAD arrow scale multiplier, or absolute scale when auto-scale is off");
 
     childSwitch->ref();
     childRoot->ref();
@@ -112,6 +154,31 @@ void ViewProviderFEMAssembly::onChanged(const App::Property* prop)
 
     if (prop == &Visibility) {
         updateChildVisibility();
+    }
+
+    if (prop != &DLOADAutoScale && prop != &DLOADScale && prop != &CLOADAutoScale
+        && prop != &CLOADScale) {
+        return;
+    }
+
+    auto* assembly = getObject();
+    auto* document = assembly ? assembly->getDocument() : nullptr;
+    if (!assembly || !document) {
+        return;
+    }
+
+    try {
+        const bool isCLOAD = prop == &CLOADAutoScale || prop == &CLOADScale;
+        const bool forceScalePrepare = prop == &DLOADAutoScale || prop == &CLOADAutoScale;
+        const std::string module = isCLOAD ? "FreeCADMbDFEMCLOADs" : "FreeCADMbDFEMDLOADs";
+        const std::string script =
+            "import " + module + "\n" + module + ".refresh_assembly_diagrams("
+            + quotedPythonString(document->getName()) + ", "
+            + quotedPythonString(assembly->getNameInDocument()) + ", "
+            + std::string(forceScalePrepare ? "True" : "False") + ")";
+        Base::Interpreter().runString(script.c_str());
+    }
+    catch (const Base::Exception&) {
     }
 }
 

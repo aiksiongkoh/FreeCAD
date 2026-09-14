@@ -12,6 +12,7 @@
 #include <Inventor/nodes/SoSwitch.h>
 
 #include <App/Document.h>
+#include <Base/Interpreter.h>
 #include <Base/Matrix.h>
 #include <Gui/Application.h>
 #include <Gui/Document.h>
@@ -54,6 +55,19 @@ bool pickedMarkerSubname(const SoPickedPoint* pp,
     return false;
 }
 
+std::string quotedPythonString(const char* value)
+{
+    std::string result = "'";
+    for (const char* cursor = value ? value : ""; *cursor; ++cursor) {
+        if (*cursor == '\\' || *cursor == '\'') {
+            result += '\\';
+        }
+        result += *cursor;
+    }
+    result += "'";
+    return result;
+}
+
 }  // namespace
 
 PROPERTY_SOURCE(MbDFEMGui::ViewProviderMbDAssembly, Gui::ViewProviderPart)
@@ -61,12 +75,56 @@ PROPERTY_SOURCE(MbDFEMGui::ViewProviderMbDAssembly, Gui::ViewProviderPart)
 ViewProviderMbDAssembly::ViewProviderMbDAssembly()
 {
     sPixmap = "Document";
+    ADD_PROPERTY_TYPE(FreeBodyDiagramAutoScale,
+                      (true),
+                      "MbDFEM",
+                      App::Prop_None,
+                      "Scale FreeBodyDiagram arrows from assembly-wide result magnitudes");
+    ADD_PROPERTY_TYPE(FreeBodyDiagramForceScale,
+                      (1.0),
+                      "MbDFEM",
+                      App::Prop_None,
+                      "FreeBodyDiagram force arrow scale multiplier, or absolute scale when auto-scale is off");
+    ADD_PROPERTY_TYPE(FreeBodyDiagramTorqueScale,
+                      (1.0),
+                      "MbDFEM",
+                      App::Prop_None,
+                      "FreeBodyDiagram torque arrow scale multiplier, or absolute scale when auto-scale is off");
 }
 
 void ViewProviderMbDAssembly::attach(App::DocumentObject* object)
 {
     Gui::ViewProviderPart::attach(object);
     setOriginInTreeVisible(object, true);
+}
+
+void ViewProviderMbDAssembly::onChanged(const App::Property* prop)
+{
+    Gui::ViewProviderPart::onChanged(prop);
+
+    if (prop != &FreeBodyDiagramAutoScale && prop != &FreeBodyDiagramForceScale
+        && prop != &FreeBodyDiagramTorqueScale) {
+        return;
+    }
+
+    auto* assembly = getObject();
+    auto* document = assembly ? assembly->getDocument() : nullptr;
+    if (!assembly || !document) {
+        return;
+    }
+
+    try {
+        const bool forceScalePrepare = prop == &FreeBodyDiagramAutoScale;
+        const std::string script =
+            "import FreeCADMbDFreeBodyDiagram\n"
+            "FreeCADMbDFreeBodyDiagram.refresh_assembly_diagrams("
+            + quotedPythonString(document->getName()) + ", "
+            + quotedPythonString(assembly->getNameInDocument()) + ", "
+            + std::string(forceScalePrepare ? "True" : "False") + ")";
+        Base::Interpreter().runString(script.c_str());
+    }
+    catch (const Base::Exception&) {
+    }
 }
 
 void ViewProviderMbDAssembly::finishRestoring()

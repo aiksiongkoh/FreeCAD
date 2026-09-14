@@ -18,7 +18,7 @@ public:
     MbDGravity();
     ~MbDGravity() override = default;
 
-    App::PropertyVector gravity;
+    App::PropertyVector gravity;  // mm/s^2
 
     const char* getViewProviderName() const override
     {
@@ -57,9 +57,11 @@ public:
     ~MbDAnimationParameters() override = default;
 
     App::PropertyInteger updateRate;
+    App::PropertyInteger currentFrame;
     App::PropertyInteger startFrame;
     App::PropertyInteger endFrame;
     App::PropertyFloat playbackSpeed;
+    App::PropertyFloat lengthScale;
     App::PropertyBool showTrails;
     App::PropertyInteger trailLength;
     App::PropertyBool loop;

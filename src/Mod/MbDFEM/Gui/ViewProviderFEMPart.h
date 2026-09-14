@@ -2,11 +2,13 @@
 
 #pragma once
 
+#include <App/PropertyStandard.h>
 #include <Gui/ViewProviderGeometryObject.h>
 #include <Mod/MbDFEM/MbDFEMGlobal.h>
 
 class QMenu;
 class SoGroup;
+class SoSeparator;
 class SoSwitch;
 
 namespace MbDFEMGui
@@ -20,10 +22,15 @@ public:
     ViewProviderFEMPart();
     ~ViewProviderFEMPart() override;
 
+    App::PropertyInteger DLOADSampleSize;
+
     void attach(App::DocumentObject* object) override;
     void updateData(const App::Property* prop) override;
     bool canAddToSceneGraph() const override;
+    void hide() override;
+    void show() override;
     SoGroup* getChildRoot() const override;
+    SoSeparator* getFrontRoot() const override;
     std::vector<App::DocumentObject*> claimChildren() const override;
     std::vector<App::DocumentObject*> claimChildren3D() const override;
     void setupContextMenu(QMenu* menu, QObject* receiver, const char* member) override;
@@ -35,6 +42,7 @@ private:
 
     SoSwitch* childSwitch;
     SoGroup* childRoot;
+    SoSeparator* frontRoot;
 };
 
 }  // namespace MbDFEMGui

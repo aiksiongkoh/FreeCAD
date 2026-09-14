@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <App/PropertyStandard.h>
 #include <Gui/ViewProviderPart.h>
 #include <Mod/MbDFEM/MbDFEMGlobal.h>
 
@@ -19,6 +20,11 @@ class MbDFEMGuiExport ViewProviderFEMAssembly: public Gui::ViewProviderPart
 public:
     ViewProviderFEMAssembly();
     ~ViewProviderFEMAssembly() override;
+
+    App::PropertyBool DLOADAutoScale;
+    App::PropertyFloat DLOADScale;
+    App::PropertyBool CLOADAutoScale;
+    App::PropertyFloat CLOADScale;
 
     void attach(App::DocumentObject* object) override;
     void updateData(const App::Property* prop) override;

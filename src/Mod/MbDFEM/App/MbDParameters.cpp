@@ -9,10 +9,10 @@ PROPERTY_SOURCE(MbDFEM::MbDAnimationParameters, App::DocumentObject)
 MbDFEM::MbDGravity::MbDGravity()
 {
     ADD_PROPERTY_TYPE(gravity,
-                      (Base::Vector3d(0.0, 0.0, -9.81)),
+                      (Base::Vector3d(0.0, 0.0, -9810.0)),
                       "MbDFEM",
                       App::Prop_None,
-                      "Gravity acceleration vector for this assembly");
+                      "Gravity acceleration vector for this assembly (mm/s^2)");
 }
 
 MbDFEM::MbDSimulationParameters::MbDSimulationParameters()
@@ -44,14 +44,20 @@ MbDFEM::MbDAnimationParameters::MbDAnimationParameters()
                       (30),
                       "MbDFEM",
                       App::Prop_None,
-                      "Real-time animation UI ticks per second");
+                      "Simulation frames per real second during animation playback");
+    ADD_PROPERTY_TYPE(currentFrame, (0), "MbDFEM", App::Prop_None, "Current result-series frame index");
     ADD_PROPERTY_TYPE(startFrame, (1), "MbDFEM", App::Prop_None, "First result-series frame index");
     ADD_PROPERTY_TYPE(endFrame, (-1), "MbDFEM", App::Prop_None, "Last result-series frame index");
     ADD_PROPERTY_TYPE(playbackSpeed,
                       (1.0),
                       "MbDFEM",
                       App::Prop_None,
-                      "Simulation seconds per real second multiplier");
+                      "Computed simulation seconds per real second during animation playback");
+    ADD_PROPERTY_TYPE(lengthScale,
+                      (1.0),
+                      "MbDFEM",
+                      App::Prop_None,
+                      "Scale factor applied to result translations during animation playback");
     ADD_PROPERTY_TYPE(showTrails, (false), "MbDFEM", App::Prop_None, "Show animation trails");
     ADD_PROPERTY_TYPE(trailLength, (60), "MbDFEM", App::Prop_None, "Number of trail frames to display");
     ADD_PROPERTY_TYPE(loop, (true), "MbDFEM", App::Prop_None, "Loop animation playback");

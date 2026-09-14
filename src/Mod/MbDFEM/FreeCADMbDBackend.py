@@ -115,10 +115,14 @@ def default_asmt_path(assembly):
 
 
 def default_calculix_working_dir(fem_part, state_index):
-    frame_name = f"Frame{int(state_index):0{FRAME_DIR_DIGITS}d}"
-    path = default_case_dir(fem_part) / _fem_part_directory_name(fem_part) / frame_name
+    path = calculix_working_dir_path(fem_part, state_index)
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def calculix_working_dir_path(fem_part, state_index):
+    frame_name = f"Frame{int(state_index):0{FRAME_DIR_DIGITS}d}"
+    return default_case_dir(fem_part) / _fem_part_directory_name(fem_part) / frame_name
 
 
 def asmt_freshness_warning(document, asmt_file):

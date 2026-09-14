@@ -176,7 +176,9 @@ bool ViewProviderMbDPart::doubleClicked()
 
 void ViewProviderMbDPart::setupContextMenu(QMenu* menu, QObject* receiver, const char* member)
 {
-    addMbDFEMContextMenuCommands(menu, {"MbDFEM_CreateMbDMarker", "MbDFEM_CreateMbDJoint"});
+    addMbDFEMContextMenuCommands(
+        menu,
+        {"MbDFEM_CreateMbDMarker", "MbDFEM_CreateMbDJoint", "MbDFEM_FreeBodyDiagram"});
 
     if (auto* otherMenu = addOtherContextMenu(menu)) {
         PartGui::ViewProviderPart::setupContextMenu(otherMenu, receiver, member);

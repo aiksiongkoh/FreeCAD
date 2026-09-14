@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <App/PropertyStandard.h>
 #include <Gui/ViewProviderPart.h>
 #include <Mod/MbDFEM/MbDFEMGlobal.h>
 
@@ -20,7 +21,12 @@ public:
     ViewProviderMbDAssembly();
     ~ViewProviderMbDAssembly() override = default;
 
+    App::PropertyBool FreeBodyDiagramAutoScale;
+    App::PropertyFloat FreeBodyDiagramForceScale;
+    App::PropertyFloat FreeBodyDiagramTorqueScale;
+
     void attach(App::DocumentObject* object) override;
+    void onChanged(const App::Property* prop) override;
     void finishRestoring() override;
     std::vector<App::DocumentObject*> claimChildren() const override;
     std::vector<App::DocumentObject*> claimChildren3D() const override;

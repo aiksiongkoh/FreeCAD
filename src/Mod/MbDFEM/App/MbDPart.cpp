@@ -6,8 +6,11 @@
 #include <array>
 #include <cmath>
 #include <cstring>
+#include <sstream>
+#include <vector>
 
 #include <BRepGProp.hxx>
+#include <Base/Console.h>
 #include <App/Document.h>
 #include <App/GeoFeatureGroupExtension.h>
 #include <Base/Exception.h>
@@ -16,6 +19,8 @@
 #include <GProp_GProps.hxx>
 #include <GProp_PrincipalProps.hxx>
 #include <Mod/Part/App/TopoShape.h>
+#include <TopAbs_ShapeEnum.hxx>
+#include <TopExp_Explorer.hxx>
 #include <TopoDS_Shape.hxx>
 #include <gp_Dir.hxx>
 
@@ -94,6 +99,82 @@ Base::Vector3d toVector(const gp_Dir& direction)
 bool hasUsableMass(const GProp_GProps& props)
 {
     return std::abs(props.Mass()) > 1.0e-12;
+}
+
+const char* shapeTypeName(TopAbs_ShapeEnum type)
+{
+    switch (type) {
+        case TopAbs_COMPOUND:
+            return "Compound";
+        case TopAbs_COMPSOLID:
+            return "CompSolid";
+        case TopAbs_SOLID:
+            return "Solid";
+        case TopAbs_SHELL:
+            return "Shell";
+        case TopAbs_FACE:
+            return "Face";
+        case TopAbs_WIRE:
+            return "Wire";
+        case TopAbs_EDGE:
+            return "Edge";
+        case TopAbs_VERTEX:
+            return "Vertex";
+        case TopAbs_SHAPE:
+            return "Shape";
+    }
+    return "Unknown";
+}
+
+int solidCount(const TopoDS_Shape& shape)
+{
+    int count = 0;
+    for (TopExp_Explorer explorer(shape, TopAbs_SOLID); explorer.More(); explorer.Next()) {
+        ++count;
+    }
+    return count;
+}
+
+std::vector<TopoDS_Shape> solidShapes(const TopoDS_Shape& shape)
+{
+    std::vector<TopoDS_Shape> solids;
+    for (TopExp_Explorer explorer(shape, TopAbs_SOLID); explorer.More(); explorer.Next()) {
+        solids.push_back(explorer.Current());
+    }
+    return solids;
+}
+
+void validateOneSolidShape(const TopoDS_Shape& shape)
+{
+    if (shape.IsNull()) {
+        throw Base::ValueError("MbDPart requires one connected solid.\n"
+                               "Found ShapeType=Null, Solids=0.\n"
+                               "Fuse the source shape into a single solid before creating the MbDPart.");
+    }
+
+    const int solids = solidCount(shape);
+    if (solids == 1) {
+        return;
+    }
+
+    std::ostringstream message;
+    message << "MbDPart requires one connected solid.\n"
+            << "Found ShapeType=" << shapeTypeName(shape.ShapeType()) << ", Solids=" << solids << ".\n"
+            << "Fuse the source shape into a single solid before creating the MbDPart.";
+    throw Base::ValueError(message.str().c_str());
+}
+
+TopoDS_Shape fuseSolids(const std::vector<TopoDS_Shape>& solids)
+{
+    if (solids.empty()) {
+        return {};
+    }
+    if (solids.size() == 1) {
+        return solids.front();
+    }
+
+    std::vector<TopoDS_Shape> tools(solids.begin() + 1, solids.end());
+    return Part::TopoShape(solids.front()).fuse(tools);
 }
 
 bool shapeMassProperties(const TopoDS_Shape& shape, GProp_GProps& props)
@@ -217,7 +298,7 @@ MbDFEM::MbDPart::MbDPart()
                       (Base::Vector3d()),
                       "MbDFEM",
                       App::Prop_None,
-                      "Part origin velocity in global coordinates");
+                      "Part origin velocity in global coordinates (mm/s)");
     ADD_PROPERTY_TYPE(omega,
                       (Base::Vector3d()),
                       "MbDFEM",
@@ -227,27 +308,27 @@ MbDFEM::MbDPart::MbDPart()
                       (Base::Vector3d()),
                       "MbDFEM",
                       App::Prop_None,
-                      "Part origin acceleration in global coordinates");
+                      "Part origin acceleration in global coordinates (mm/s^2)");
     ADD_PROPERTY_TYPE(alpha,
                       (Base::Vector3d()),
                       "MbDFEM",
                       App::Prop_None,
                       "Part angular acceleration in global coordinates");
-    ADD_PROPERTY_TYPE(xs, (), "MbDFEM Results", App::Prop_None, "Solved X position values");
-    ADD_PROPERTY_TYPE(ys, (), "MbDFEM Results", App::Prop_None, "Solved Y position values");
-    ADD_PROPERTY_TYPE(zs, (), "MbDFEM Results", App::Prop_None, "Solved Z position values");
+    ADD_PROPERTY_TYPE(xs, (), "MbDFEM Results", App::Prop_None, "Solved X position values (mm)");
+    ADD_PROPERTY_TYPE(ys, (), "MbDFEM Results", App::Prop_None, "Solved Y position values (mm)");
+    ADD_PROPERTY_TYPE(zs, (), "MbDFEM Results", App::Prop_None, "Solved Z position values (mm)");
     ADD_PROPERTY_TYPE(bryxs, (), "MbDFEM Results", App::Prop_None, "Solved Bryant X angle values");
     ADD_PROPERTY_TYPE(bryys, (), "MbDFEM Results", App::Prop_None, "Solved Bryant Y angle values");
     ADD_PROPERTY_TYPE(bryzs, (), "MbDFEM Results", App::Prop_None, "Solved Bryant Z angle values");
-    ADD_PROPERTY_TYPE(vxs, (), "MbDFEM Results", App::Prop_None, "Solved X velocity values");
-    ADD_PROPERTY_TYPE(vys, (), "MbDFEM Results", App::Prop_None, "Solved Y velocity values");
-    ADD_PROPERTY_TYPE(vzs, (), "MbDFEM Results", App::Prop_None, "Solved Z velocity values");
+    ADD_PROPERTY_TYPE(vxs, (), "MbDFEM Results", App::Prop_None, "Solved X velocity values (mm/s)");
+    ADD_PROPERTY_TYPE(vys, (), "MbDFEM Results", App::Prop_None, "Solved Y velocity values (mm/s)");
+    ADD_PROPERTY_TYPE(vzs, (), "MbDFEM Results", App::Prop_None, "Solved Z velocity values (mm/s)");
     ADD_PROPERTY_TYPE(omexs, (), "MbDFEM Results", App::Prop_None, "Solved X angular velocity values");
     ADD_PROPERTY_TYPE(omeys, (), "MbDFEM Results", App::Prop_None, "Solved Y angular velocity values");
     ADD_PROPERTY_TYPE(omezs, (), "MbDFEM Results", App::Prop_None, "Solved Z angular velocity values");
-    ADD_PROPERTY_TYPE(axs, (), "MbDFEM Results", App::Prop_None, "Solved X acceleration values");
-    ADD_PROPERTY_TYPE(ays, (), "MbDFEM Results", App::Prop_None, "Solved Y acceleration values");
-    ADD_PROPERTY_TYPE(azs, (), "MbDFEM Results", App::Prop_None, "Solved Z acceleration values");
+    ADD_PROPERTY_TYPE(axs, (), "MbDFEM Results", App::Prop_None, "Solved X acceleration values (mm/s^2)");
+    ADD_PROPERTY_TYPE(ays, (), "MbDFEM Results", App::Prop_None, "Solved Y acceleration values (mm/s^2)");
+    ADD_PROPERTY_TYPE(azs, (), "MbDFEM Results", App::Prop_None, "Solved Z acceleration values (mm/s^2)");
     ADD_PROPERTY_TYPE(alpxs, (), "MbDFEM Results", App::Prop_None, "Solved X angular acceleration values");
     ADD_PROPERTY_TYPE(alpys, (), "MbDFEM Results", App::Prop_None, "Solved Y angular acceleration values");
     ADD_PROPERTY_TYPE(alpzs, (), "MbDFEM Results", App::Prop_None, "Solved Z angular acceleration values");
@@ -296,8 +377,45 @@ void MbDFEM::MbDPart::setMassMarker(MbDMassMarker* marker)
     }
 }
 
+bool MbDFEM::MbDPart::normalizeShapeToOneSolid()
+{
+    const TopoDS_Shape shape = Shape.getValue();
+    if (shape.IsNull()) {
+        validateOneSolidShape(shape);
+        return false;
+    }
+
+    const int originalSolids = solidCount(shape);
+    if (originalSolids == 1) {
+        return false;
+    }
+
+    const TopoDS_Shape fused = fuseSolids(solidShapes(shape));
+    validateOneSolidShape(fused);
+
+    _normalizingShape = true;
+    try {
+        Shape.setValue(fused);
+    }
+    catch (...) {
+        _normalizingShape = false;
+        throw;
+    }
+    _normalizingShape = false;
+
+    Base::Console().warning(
+        "MbDPart %s: source shape contained %d solids; fused them into one solid. "
+        "The original Part::Feature is unchanged.\n",
+        getNameInDocument(),
+        originalSolids
+    );
+    return true;
+}
+
 MbDFEM::MbDMassMarker* MbDFEM::MbDPart::populateMassMarkerFromShape()
 {
+    normalizeShapeToOneSolid();
+
     GProp_GProps props;
     if (!shapeMassProperties(Shape.getValue(), props)) {
         throw Base::ValueError("MbDPart shape has no usable mass properties");
@@ -408,8 +526,19 @@ void MbDFEM::MbDPart::onChanged(const App::Property* prop)
 {
     App::GeoFeature::onChanged(prop);
 
+    if (prop != &Shape) {
+        return;
+    }
+    if (Shape.getValue().IsNull()) {
+        return;
+    }
+
+    if (!_normalizingShape) {
+        normalizeShapeToOneSolid();
+    }
+
     auto* marker = getMassMarker();
-    if (prop == &Shape && (marker == nullptr || marker->massMarkerFromShape.getValue())) {
+    if (marker == nullptr || marker->massMarkerFromShape.getValue()) {
         try {
             populateMassMarkerFromShape();
         }
