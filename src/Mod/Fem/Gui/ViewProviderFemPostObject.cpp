@@ -182,6 +182,27 @@ ViewProviderFemPostObject::ViewProviderFemPostObject()
     );
     ADD_PROPERTY_TYPE(LineWidth, (1), "Object Style", App::Prop_None, "Set wireframe line width.");
     ADD_PROPERTY_TYPE(PointSize, (3), "Object Style", App::Prop_None, "Set node point size.");
+    ADD_PROPERTY_TYPE(
+        UseFixedColorBarRange,
+        (false),
+        "Coloring",
+        App::Prop_None,
+        "Use a fixed color bar range instead of the current field range."
+    );
+    ADD_PROPERTY_TYPE(
+        FixedColorBarMinimum,
+        (0.0f),
+        "Coloring",
+        App::Prop_None,
+        "Minimum value for the fixed color bar range."
+    );
+    ADD_PROPERTY_TYPE(
+        FixedColorBarMaximum,
+        (1.0f),
+        "Coloring",
+        App::Prop_None,
+        "Maximum value for the fixed color bar range."
+    );
 
 
     LineWidth.setConstraints(&sizeRange);
@@ -719,7 +740,12 @@ void ViewProviderFemPostObject::WriteColorData(bool ResetColorBarRange)
     }
 
     // build the lookuptable
-    if (ResetColorBarRange) {
+    const bool useFixedRange = UseFixedColorBarRange.getValue()
+        && FixedColorBarMinimum.getValue() < FixedColorBarMaximum.getValue();
+    if (useFixedRange) {
+        setRangeOfColorBar(FixedColorBarMinimum.getValue(), FixedColorBarMaximum.getValue());
+    }
+    else if (ResetColorBarRange) {
         double range[2];
         data->GetRange(range, component);
         setRangeOfColorBar(static_cast<float>(range[0]), static_cast<float>(range[1]));
@@ -873,6 +899,10 @@ void ViewProviderFemPostObject::onChanged(const App::Property* prop)
     }
     else if (prop == &NoneFieldColor) {
         WriteColorData(ResetColorBarRange);
+    }
+    else if (prop == &UseFixedColorBarRange || prop == &FixedColorBarMinimum
+             || prop == &FixedColorBarMaximum) {
+        WriteColorData(true);
     }
 
     ViewProviderDocumentObject::onChanged(prop);

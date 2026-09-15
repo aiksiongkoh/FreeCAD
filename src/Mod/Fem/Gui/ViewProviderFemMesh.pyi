@@ -36,8 +36,14 @@ class ViewProviderFemMesh(ViewProviderGeometryObject):
         """Reset highlighted nodes."""
         ...
 
-    def setNodeColorByScalars(self) -> Any:
-        """Sets mesh node colors using element list and value list."""
+    def setNodeColorByScalars(
+        self,
+        node_ids: list[int],
+        values: list[float],
+        fixed_min: float | None = None,
+        fixed_max: float | None = None,
+    ) -> Any:
+        """Sets mesh node colors using node id and value lists."""
         ...
 
     def setNodeDisplacementByVectors(self) -> Any:

@@ -87,6 +87,9 @@ public:
     App::PropertyColor NoneFieldColor;
     App::PropertyFloatConstraint LineWidth;
     App::PropertyFloatConstraint PointSize;
+    App::PropertyBool UseFixedColorBarRange;
+    App::PropertyFloat FixedColorBarMinimum;
+    App::PropertyFloat FixedColorBarMaximum;
 
     void attach(App::DocumentObject* pcObject) override;
     void setDisplayMode(const char* ModeName) override;
