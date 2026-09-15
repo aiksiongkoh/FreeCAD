@@ -2022,19 +2022,33 @@ void TreeWidget::keyPressEvent(QKeyEvent* event)
     }
 
     else if (event->key() == Qt::Key_Space && event->modifiers() == Qt::NoModifier) {
-        // Toggle each selected feature's own visibility directly
         for (auto* raw : selectedItems()) {
             if (raw->type() != ObjectType) {
                 continue;
             }
-            auto* vp = static_cast<DocumentObjectItem*>(raw)->object();
+            auto* objItem = static_cast<DocumentObjectItem*>(raw);
+            auto* vp = objItem->object();
             if (!vp || !vp->canToggleVisibility()) {
                 continue;
             }
             auto* appObj = vp->getObject();
-            vp->Gui::ViewProvider::toggleVisibility();
+
+            App::DocumentObject* parent = nullptr;
+            std::ostringstream subName;
+            objItem->getSubName(subName, parent);
+
+            int visible = -1;
+            if (parent) {
+                visible = parent->isElementVisible(appObj->getNameInDocument());
+            }
+            if (parent && visible >= 0) {
+                parent->setElementVisible(appObj->getNameInDocument(), !visible);
+            }
+            else {
+                vp->Gui::ViewProvider::toggleVisibility();
+            }
             Selection().updateSelection(
-                vp->isShow(),
+                visible < 0 ? vp->isShow() : !visible,
                 appObj->getDocument()->getName(),
                 appObj->getNameInDocument()
             );
