@@ -164,6 +164,9 @@ void ViewProviderFemPostPipeline::updateColorBars()
                 Gui::Application::Instance->getViewProvider(child)
             );
             if (vpObject) {
+                vpObject->UseFixedColorBarRange.setValue(UseFixedColorBarRange.getValue());
+                vpObject->FixedColorBarMinimum.setValue(FixedColorBarMinimum.getValue());
+                vpObject->FixedColorBarMaximum.setValue(FixedColorBarMaximum.getValue());
                 vpObject->updateMaterial();
             }
         }

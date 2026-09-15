@@ -131,20 +131,36 @@ Py::Dict colorListToDict(const std::vector<unsigned long>& elements,
 
 } // namespace
 
-PyObject* ViewProviderFemMeshPy::setNodeColorByScalars(PyObject* args)
+PyObject* ViewProviderFemMeshPy::setNodeColorByScalars(PyObject* args, PyObject* kwd)
 {
     double max = -1e12;
     double min = +1e12;
     PyObject* node_ids_py;
     PyObject* values_py;
+    double fixed_min = 0.0;
+    double fixed_max = 0.0;
+    static const char* keywords[] = {"node_ids", "values", "fixed_min", "fixed_max", nullptr};
 
-    if (PyArg_ParseTuple(args, "O!O!", &PyList_Type, &node_ids_py, &PyList_Type, &values_py)) {
+    if (PyArg_ParseTupleAndKeywords(args,
+                                    kwd,
+                                    "O!O!|dd",
+                                    const_cast<char**>(keywords),
+                                    &PyList_Type,
+                                    &node_ids_py,
+                                    &PyList_Type,
+                                    &values_py,
+                                    &fixed_min,
+                                    &fixed_max)) {
         std::vector<long> ids;
         std::vector<double> values;
         int num_items = PyList_Size(node_ids_py);
         if (num_items < 0) {
             PyErr_SetString(PyExc_ValueError, "PyList_Size < 0. That is not a valid list!");
             Py_Return;
+        }
+        if (PyList_Size(values_py) != num_items) {
+            PyErr_SetString(PyExc_ValueError, "Node id and value lists must have the same length");
+            return nullptr;
         }
         std::vector<Base::Color> node_colors(num_items);
         for (int i = 0; i < num_items; i++) {
@@ -160,6 +176,10 @@ PyObject* ViewProviderFemMeshPy::setNodeColorByScalars(PyObject* args)
             if (val < min) {
                 min = val;
             }
+        }
+        if (fixed_min < fixed_max) {
+            min = fixed_min;
+            max = fixed_max;
         }
         long i = 0;
         for (std::vector<double>::const_iterator it = values.begin(); it != values.end();
