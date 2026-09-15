@@ -1316,22 +1316,34 @@ class MbDFEMAssemblyTest(unittest.TestCase):
 
         original_refresh = FreeCADMbDFEMResultsPanel._refresh_pipeline_fixed_color_range
         original_schedule = FreeCADMbDFEMResultsPanel._schedule_pipeline_fixed_color_range_refresh
+        original_global_range = FreeCADMbDFEMResultsPanel._global_pipeline_scalar_range
 
         try:
             FreeCADMbDFEMResultsPanel._decorate_pipeline_field_combo(combo)
 
             def refresh(fem_part_arg, pipeline_arg, value_range=None):
                 refreshed_fields.append(
-                    FreeCADMbDFEMResultsPanel._pipeline_field_name(pipeline_arg)
+                    (
+                        FreeCADMbDFEMResultsPanel._pipeline_field_name(pipeline_arg),
+                        value_range,
+                    )
                 )
 
             def schedule(fem_part_arg, pipeline_arg, value_range=None):
                 scheduled_fields.append(
-                    FreeCADMbDFEMResultsPanel._pipeline_field_name(pipeline_arg)
+                    (
+                        FreeCADMbDFEMResultsPanel._pipeline_field_name(pipeline_arg),
+                        value_range,
+                    )
                 )
 
             FreeCADMbDFEMResultsPanel._refresh_pipeline_fixed_color_range = refresh
             FreeCADMbDFEMResultsPanel._schedule_pipeline_fixed_color_range_refresh = schedule
+            FreeCADMbDFEMResultsPanel._global_pipeline_scalar_range = (
+                lambda fem_part_arg, field: (0.1, 0.2)
+                if field == "Displacement Magnitude"
+                else (100.0, 200.0)
+            )
 
             panel._set_pipeline_from_task_panel(combo)
 
@@ -1339,15 +1351,55 @@ class MbDFEMAssemblyTest(unittest.TestCase):
                 FreeCADMbDFEMResultsPanel._pipeline_field_name(pipeline),
                 "Displacement Magnitude",
             )
-            self.assertEqual(refreshed_fields, ["Displacement Magnitude"])
-            self.assertEqual(scheduled_fields, ["Displacement Magnitude"])
+            self.assertEqual(refreshed_fields, [("Displacement Magnitude", (0.1, 0.2))])
+            self.assertEqual(scheduled_fields, [("Displacement Magnitude", (0.1, 0.2))])
             self.assertIsNone(panel._playback_color_range)
             self.assertEqual(panel._playback_color_field, "")
+            self.assertEqual(panel._selected_pipeline_field, "Displacement Magnitude")
             self.assertEqual(panel.field_label.text, "Field: Displacement Magnitude [m]")
             self.assertEqual(combo.itemText(1), "Displacement Magnitude [m]")
         finally:
             FreeCADMbDFEMResultsPanel._refresh_pipeline_fixed_color_range = original_refresh
             FreeCADMbDFEMResultsPanel._schedule_pipeline_fixed_color_range_refresh = original_schedule
+            FreeCADMbDFEMResultsPanel._global_pipeline_scalar_range = original_global_range
+
+    def test_results_panel_field_combo_reads_decorated_field_label_as_raw_field(self):
+        class FakeCombo:
+            def __init__(self):
+                self._items = ["None", "Displacement Magnitude [m]", "von Mises Stress [Pa]"]
+                self._data = {}
+                self._current_index = 1
+
+            def count(self):
+                return len(self._items)
+
+            def itemText(self, index):
+                return self._items[index]
+
+            def setItemText(self, index, text):
+                self._items[index] = text
+
+            def itemData(self, index, role):
+                return self._data.get((index, role))
+
+            def setItemData(self, index, value, role):
+                self._data[(index, role)] = value
+
+            def currentIndex(self):
+                return self._current_index
+
+            def currentText(self):
+                return self._items[self._current_index]
+
+        combo = FakeCombo()
+
+        FreeCADMbDFEMResultsPanel._decorate_pipeline_field_combo(combo)
+
+        self.assertEqual(
+            FreeCADMbDFEMResultsPanel._pipeline_field_combo_value(combo),
+            "Displacement Magnitude",
+        )
+        self.assertEqual(combo.itemText(1), "Displacement Magnitude [m]")
 
     def test_results_panel_clears_stale_fixed_legend_range_when_field_has_no_range(self):
         class FakeEnumProperty:
