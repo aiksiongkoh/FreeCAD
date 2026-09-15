@@ -318,6 +318,16 @@ def _pipeline_field_display_label(field_name):
     return f"{field_name} [{unit}]" if unit else field_name
 
 
+def _pipeline_field_raw_name(field_name):
+    text = str(field_name or "")
+    if text in _PIPELINE_FIELD_DISPLAY_UNITS:
+        return text
+    for raw_name in _PIPELINE_FIELD_DISPLAY_UNITS:
+        if text == _pipeline_field_display_label(raw_name):
+            return raw_name
+    return text
+
+
 def _decorate_pipeline_field_combo(combo_box):
     try:
         from PySide import QtCore
@@ -329,8 +339,9 @@ def _decorate_pipeline_field_combo(combo_box):
         field_name = combo_box.itemData(index, role)
         if not field_name:
             field_name = combo_box.itemText(index)
-            combo_box.setItemData(index, field_name, role)
-        combo_box.setItemText(index, _pipeline_field_display_label(str(field_name)))
+        field_name = _pipeline_field_raw_name(field_name)
+        combo_box.setItemData(index, field_name, role)
+        combo_box.setItemText(index, _pipeline_field_display_label(field_name))
 
 
 def _pipeline_field_combo_value(combo_box):
@@ -338,9 +349,12 @@ def _pipeline_field_combo_value(combo_box):
         from PySide import QtCore
 
         value = combo_box.itemData(combo_box.currentIndex(), QtCore.Qt.UserRole)
-        return str(value) if value else combo_box.currentText()
+        return _pipeline_field_raw_name(value if value else combo_box.currentText())
     except Exception:
-        return ""
+        try:
+            return _pipeline_field_raw_name(combo_box.currentText())
+        except Exception:
+            return ""
 
 
 def _scaled_min_max(values, field_name):
@@ -529,6 +543,32 @@ def _set_pipeline_fixed_color_range(pipeline, value_range):
         except Exception:
             return False
 
+    def sync_post_view(post_object):
+        post_view = getattr(post_object, "ViewObject", None)
+        if post_view is None:
+            return
+        field_name = _pipeline_field_name(pipeline) or _DEFAULT_PIPELINE_FIELD
+        field = getattr(post_view, "Field", None)
+        if field is not None:
+            _set_property_enum_value(field, field_name)
+        component = getattr(post_view, "Component", None)
+        if component is not None:
+            _set_property_enum_value(component, "Not a vector")
+        try:
+            if value_range is None:
+                post_view.setPropertyByName("UseFixedColorBarRange", False)
+            else:
+                minimum, maximum = value_range
+                post_view.setPropertyByName("FixedColorBarMinimum", float(minimum))
+                post_view.setPropertyByName("FixedColorBarMaximum", float(maximum))
+                post_view.setPropertyByName("UseFixedColorBarRange", True)
+        except Exception:
+            pass
+        try:
+            post_view.updateMaterial()
+        except Exception:
+            pass
+
     try:
         set_app_range(value_range)
         if value_range is None:
@@ -545,6 +585,8 @@ def _set_pipeline_fixed_color_range(pipeline, value_range):
         pipeline.Document.recompute()
     except Exception:
         pass
+    for post_object in post_objects():
+        sync_post_view(post_object)
     try:
         view_object.updateMaterial()
     except Exception:
@@ -556,7 +598,7 @@ def _set_pipeline_fixed_color_range(pipeline, value_range):
 
 
 def _apply_global_pipeline_color_range(fem_part, pipeline, value_range=None):
-    field_name = _pipeline_field_name(pipeline) or _DEFAULT_PIPELINE_FIELD
+    field_name = _pipeline_field_raw_name(_pipeline_field_name(pipeline)) or _DEFAULT_PIPELINE_FIELD
     if not field_name:
         return
     if value_range is None:
@@ -576,7 +618,11 @@ def _apply_result_mesh_color_range(fem_part, result, value_range=None):
     if result is None:
         return
     pipeline = getattr(fem_part, "visual", None)
-    field_name = _pipeline_field_name(pipeline) if pipeline is not None else _DEFAULT_PIPELINE_FIELD
+    field_name = (
+        _pipeline_field_raw_name(_pipeline_field_name(pipeline))
+        if pipeline is not None
+        else _DEFAULT_PIPELINE_FIELD
+    )
     attribute = _PIPELINE_SCALAR_FIELD_PROPERTIES.get(field_name)
     if not attribute:
         return
@@ -982,6 +1028,7 @@ class FEMResultsTaskPanel:
         self._playing = False
         self._playback_color_range = None
         self._playback_color_field = ""
+        self._selected_pipeline_field = _DEFAULT_PIPELINE_FIELD
         self._suppress_fem_freshness_warning = False
 
         self._form_widget = QtWidgets.QWidget()
@@ -1290,7 +1337,12 @@ class FEMResultsTaskPanel:
         view_object = getattr(pipeline, "ViewObject", None)
         if view_object is None:
             return
+        field = getattr(self, "_selected_pipeline_field", "") or _pipeline_field_name(pipeline)
+        if field:
+            _select_pipeline_field(pipeline, field)
         value_range = self._active_playback_color_range(pipeline)
+        if value_range is None and field:
+            value_range = _global_pipeline_scalar_range(self.fem_part, field)
         _refresh_pipeline_fixed_color_range(self.fem_part, pipeline, value_range=value_range)
         _schedule_pipeline_fixed_color_range_refresh(
             self.fem_part,
@@ -1312,6 +1364,8 @@ class FEMResultsTaskPanel:
             if not field:
                 field = _pipeline_field_name(pipeline)
             if field:
+                field = _pipeline_field_raw_name(field)
+                self._selected_pipeline_field = field
                 _select_pipeline_field(pipeline, field)
             if getattr(combo_box, "objectName", lambda: "")() == "Field":
                 _decorate_pipeline_field_combo(combo_box)
@@ -1319,8 +1373,13 @@ class FEMResultsTaskPanel:
             pass
         self._playback_color_range = None
         self._playback_color_field = ""
-        _refresh_pipeline_fixed_color_range(self.fem_part, pipeline)
-        _schedule_pipeline_fixed_color_range_refresh(self.fem_part, pipeline)
+        value_range = (
+            _global_pipeline_scalar_range(self.fem_part, self._selected_pipeline_field)
+            if getattr(self, "_selected_pipeline_field", "")
+            else None
+        )
+        _refresh_pipeline_fixed_color_range(self.fem_part, pipeline, value_range=value_range)
+        _schedule_pipeline_fixed_color_range_refresh(self.fem_part, pipeline, value_range=value_range)
         self._refresh_field_label()
 
     def _active_playback_color_range(self, pipeline):
@@ -1334,7 +1393,8 @@ class FEMResultsTaskPanel:
         playback_range = self._active_playback_color_range(pipeline)
         if playback_range is not None:
             return playback_range
-        field = _pipeline_field_name(pipeline) or _DEFAULT_PIPELINE_FIELD
+        field = getattr(self, "_selected_pipeline_field", "") or _pipeline_field_name(pipeline) or _DEFAULT_PIPELINE_FIELD
+        field = _pipeline_field_raw_name(field)
         return _global_pipeline_scalar_range(self.fem_part, field) if field else None
 
     def _freeze_playback_color_range(self):
