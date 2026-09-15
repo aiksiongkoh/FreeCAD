@@ -164,6 +164,12 @@ void ViewProviderFemPostPipeline::updateColorBars()
                 Gui::Application::Instance->getViewProvider(child)
             );
             if (vpObject) {
+                if (Field.hasEnums() && Field.getValue() >= 0) {
+                    vpObject->Field.setValue(Field.getValueAsString());
+                }
+                if (Component.hasEnums() && Component.getValue() >= 0) {
+                    vpObject->Component.setValue(Component.getValueAsString());
+                }
                 vpObject->UseFixedColorBarRange.setValue(UseFixedColorBarRange.getValue());
                 vpObject->FixedColorBarMinimum.setValue(FixedColorBarMinimum.getValue());
                 vpObject->FixedColorBarMaximum.setValue(FixedColorBarMaximum.getValue());
