@@ -5,7 +5,10 @@
 #include <Inventor/nodes/SoDrawStyle.h>
 #include <Inventor/nodes/SoMaterial.h>
 #include <Inventor/nodes/SoMaterialBinding.h>
+#include <Inventor/nodes/SoSeparator.h>
+#include <Inventor/nodes/SoSwitch.h>
 #include <Base/Tools.h>
+#include <Gui/SoFCColorBar.h>
 #include <Mod/Fem/App/FemPostPipeline.h>
 
 #include "ViewProviderFEMPostPipeline.h"
@@ -16,7 +19,9 @@ using namespace MbDFEMGui;
 PROPERTY_SOURCE(MbDFEMGui::ViewProviderFEMPostPipeline, FemGui::ViewProviderFemPostPipeline)
 
 ViewProviderFEMPostPipeline::ViewProviderFEMPostPipeline()
+    : legendSwitch(new SoSwitch)
 {
+    legendSwitch->ref();
     ADD_PROPERTY_TYPE(ShowColorContour, (true), "Coloring", App::Prop_None,
                       "Show scalar colors while retaining the selected field");
     ADD_PROPERTY_TYPE(ShowLegend, (true), "Coloring", App::Prop_None,
@@ -34,6 +39,21 @@ ViewProviderFEMPostPipeline::ViewProviderFEMPostPipeline()
     legendSensor.attach(m_colorStyle);
 }
 
+ViewProviderFEMPostPipeline::~ViewProviderFEMPostPipeline()
+{
+    legendSwitch->unref();
+}
+
+void ViewProviderFEMPostPipeline::attach(App::DocumentObject* object)
+{
+    FemGui::ViewProviderFemPostPipeline::attach(object);
+    // Gate the whole legend, including text/annotation nodes that can ignore
+    // the inherited draw style. The shared color bar itself stays untouched.
+    legendSwitch->addChild(m_colorBar);
+    m_colorRoot->replaceChild(m_colorBar, legendSwitch);
+    applyDisplayOptions();
+}
+
 bool ViewProviderFEMPostPipeline::allowOverride(const App::DocumentObject& object) const
 {
     return object.isDerivedFrom<Fem::FemPostPipeline>();
@@ -44,6 +64,8 @@ void ViewProviderFEMPostPipeline::applyDisplayOptions()
     materialSensor.detach();
     legendSensor.detach();
     const bool contour = ShowColorContour.getValue() && Field.hasEnums() && Field.getValue() > 0;
+    legendSwitch->whichChild = Visibility.getValue() && contour && ShowLegend.getValue()
+        ? SO_SWITCH_ALL : SO_SWITCH_NONE;
     m_colorStyle->style = Visibility.getValue() && contour && ShowLegend.getValue()
         ? SoDrawStyle::FILLED : SoDrawStyle::INVISIBLE;
     if (!contour) {

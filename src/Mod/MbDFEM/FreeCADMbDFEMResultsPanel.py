@@ -231,7 +231,9 @@ def _set_result_state_metadata(fem_part, result, state_index):
         pass
 
 
-def _property_enum_names(prop):
+def _property_enum_names(prop, owner=None, name=None):
+    if isinstance(prop, str) and owner is not None:
+        return list(owner.getEnumerationsOfProperty(name))
     try:
         return list(prop.getEnumVector())
     except Exception:
@@ -244,6 +246,8 @@ def _property_enum_names(prop):
 
 
 def _property_enum_value(prop):
+    if isinstance(prop, str):
+        return prop
     try:
         return str(prop.getValueAsString())
     except Exception:
@@ -258,8 +262,13 @@ def _property_enum_value(prop):
     return ""
 
 
-def _set_property_enum_value(prop, value):
+def _set_property_enum_value(prop, value, owner=None, name=None):
     if not value:
+        return False
+    if isinstance(prop, str) and owner is not None:
+        if value in _property_enum_names(prop, owner, name):
+            setattr(owner, name, value)
+            return True
         return False
     try:
         prop.setValue(value)
@@ -550,10 +559,10 @@ def _set_pipeline_fixed_color_range(pipeline, value_range):
         field_name = _pipeline_field_name(pipeline) or _DEFAULT_PIPELINE_FIELD
         field = getattr(post_view, "Field", None)
         if field is not None:
-            _set_property_enum_value(field, field_name)
+            _set_property_enum_value(field, field_name, post_view, "Field")
         component = getattr(post_view, "Component", None)
         if component is not None:
-            _set_property_enum_value(component, "Not a vector")
+            _set_property_enum_value(component, "Not a vector", post_view, "Component")
         try:
             if value_range is None:
                 post_view.setPropertyByName("UseFixedColorBarRange", False)
@@ -672,13 +681,15 @@ def _select_pipeline_field(pipeline, preferred_field=None):
     if field is None:
         return ""
 
-    names = _property_enum_names(field)
+    names = _property_enum_names(field, view_object, "Field")
     candidates = [preferred_field, _DEFAULT_PIPELINE_FIELD, "Displacement Magnitude"]
     for candidate in candidates:
-        if candidate and candidate in names and _set_property_enum_value(field, candidate):
+        if candidate and candidate in names and _set_property_enum_value(
+            field, candidate, view_object, "Field"
+        ):
             component = getattr(view_object, "Component", None)
             if component is not None:
-                _set_property_enum_value(component, "Not a vector")
+                _set_property_enum_value(component, "Not a vector", view_object, "Component")
             try:
                 view_object.updateMaterial()
             except Exception:
@@ -697,7 +708,10 @@ def _pipeline_field_names(pipeline):
     field = getattr(view_object, "Field", None)
     if field is None:
         return []
-    return [name for name in _property_enum_names(field) if name and name != "None"]
+    return [
+        name for name in _property_enum_names(field, view_object, "Field")
+        if name and name != "None"
+    ]
 
 
 def _results_display_settings(fem_part):
@@ -718,6 +732,59 @@ def _apply_results_display_settings(fem_part, pipeline):
     view.Visibility = visible
 
 
+def _display_pipeline(fem_part):
+    """Use an MbDFEM renderer even when the solver supplied a standard FEM pipeline.
+
+    Retain the source pipeline, including its filters and external references.
+    Only the FEMPart's visual link changes to the reusable display pipeline.
+    """
+    source = getattr(fem_part, "visual", None)
+    view_type = "MbDFEMGui::ViewProviderFEMPostPipeline"
+    if source is not None:
+        source_view = getattr(source, "ViewObject", None)
+        if source_view is None or source_view.TypeId == view_type:
+            return source
+
+    pipeline = next(
+        (
+            obj for obj in getattr(fem_part, "Group", [])
+            if getattr(getattr(obj, "ViewObject", None), "TypeId", "") == view_type
+        ),
+        None,
+    )
+    if pipeline is None:
+        pipeline = fem_part.Document.addObject(
+            "Fem::FemPostPipeline", "Pipeline_CCX_Results", viewType=view_type
+        )
+        fem_part.addObject(pipeline)
+    if source is not None:
+        if "MbDFEMSourcePipeline" not in pipeline.PropertiesList:
+            pipeline.addProperty(
+                "App::PropertyLink",
+                "MbDFEMSourcePipeline",
+                "MbDFEM",
+                "Original solver pipeline retained for its data and filters",
+            )
+        pipeline.MbDFEMSourcePipeline = source
+        data = source.Data
+        if data is not None:
+            pipeline.Data = data
+        for name in ("DisplayMode", "Transparency", "NoneFieldColor", "Field", "Component"):
+            value = getattr(source.ViewObject, name)
+            if name in ("Field", "Component"):
+                if not _pipeline_field_name(source):
+                    continue
+                _set_property_enum_value(
+                    getattr(pipeline.ViewObject, name), value, pipeline.ViewObject, name
+                )
+            else:
+                setattr(pipeline.ViewObject, name, value)
+        source.ViewObject.Visibility = False
+    fem_part.visual = pipeline
+    _apply_results_display_settings(fem_part, pipeline)
+    return pipeline
+
+
 def _ensure_visual_pipeline(fem_part, result, preferred_field=None):
     if result is None:
         return None
@@ -726,21 +793,11 @@ def _ensure_visual_pipeline(fem_part, result, preferred_field=None):
     if document is None:
         return None
 
-    pipeline = getattr(fem_part, "visual", None)
-    if pipeline is None:
-        try:
-            pipeline = document.addObject(
-                "Fem::FemPostPipeline", "Pipeline_CCX_Results",
-                viewType="MbDFEMGui::ViewProviderFEMPostPipeline",
-            )
-            fem_part.visual = pipeline
-            try:
-                fem_part.addObject(pipeline)
-            except Exception:
-                pass
-        except Exception as exc:
-            App.Console.PrintWarning(f"Unable to create FEM result pipeline: {exc}\n")
-            return None
+    try:
+        pipeline = _display_pipeline(fem_part)
+    except Exception as exc:
+        App.Console.PrintWarning(f"Unable to create FEM result pipeline: {exc}\n")
+        return None
 
     if preferred_field is None:
         preferred_field = _pipeline_field_name(pipeline)
@@ -1161,10 +1218,14 @@ class FEMResultsTaskPanel:
         self._refresh()
 
     def _set_display_options(self, *args):
+        pipeline = _display_pipeline(self.fem_part)
         view = self.results_folder.ViewObject
         view.ShowColorContour = self.contour_checkbox.isChecked()
         view.ShowLegend = self.legend_checkbox.isChecked()
         self.legend_checkbox.setEnabled(view.ShowColorContour)
+        if not _pipeline_field_name(pipeline):
+            _select_pipeline_field(pipeline)
+        _apply_results_display_settings(self.fem_part, pipeline)
 
     def _hide_results(self):
         self.results_folder.ViewObject.Visibility = False
@@ -1280,7 +1341,7 @@ class FEMResultsTaskPanel:
             self.status_label.setText("No owning FEMPart found.")
         elif count == 0:
             self.status_label.setText("No MbDAssembly state series found.")
-        elif message:
+        elif isinstance(message, str) and message:
             self.status_label.setText(message)
         else:
             solved = len(
@@ -1309,6 +1370,8 @@ class FEMResultsTaskPanel:
             return None
         pipeline = getattr(self.fem_part, "visual", None)
         if pipeline is not None:
+            pipeline = _display_pipeline(self.fem_part)
+            _select_pipeline_field(pipeline, _pipeline_field_name(pipeline))
             return pipeline
 
         results = _linked_results(self.fem_part)
@@ -1543,7 +1606,12 @@ class FEMResultsTaskPanel:
                 raise RuntimeError("FEM result display canceled.")
 
         apply_state(self.fem_part, index)
-        pipeline = _ensure_visual_pipeline(self.fem_part, current_result)
+        preferred_field = (
+            getattr(self, "_selected_pipeline_field", "")
+            or _pipeline_field_name(getattr(self.fem_part, "visual", None))
+            or _DEFAULT_PIPELINE_FIELD
+        )
+        pipeline = _ensure_visual_pipeline(self.fem_part, current_result, preferred_field)
         value_range = self._active_color_range(pipeline) if pipeline is not None else None
         if pipeline is not None:
             _refresh_pipeline_fixed_color_range(

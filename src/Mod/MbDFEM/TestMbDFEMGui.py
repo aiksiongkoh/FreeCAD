@@ -1281,6 +1281,12 @@ class MbDFEMGuiViewProviderTest(unittest.TestCase):
             Results._assign_result_for_state(fem_part, index, result)
         folder = fem_part.ensureResultsFolder()
         self.document.recompute()
+        # The embedded solver creates an ordinary FEM pipeline before the
+        # results task panel is opened. Exercise that adoption path too.
+        legacy = self.document.addObject("Fem::FemPostPipeline", "SolverPipeline")
+        legacy.load(Results._result_for_state(fem_part, 0))
+        Results.FreeCADMbDFEMEmbedded.FEMPartAnalysisAdapter(fem_part).addObject(legacy)
+        self.assertIs(fem_part.visual, legacy)
         with patch.object(Results.FreeCADMbDBackend, "fem_files_freshness_warning", return_value=""):
             panel = Results.FEMResultsTaskPanel(folder)
         panel._suppress_fem_freshness_warning = True
@@ -1289,7 +1295,9 @@ class MbDFEMGuiViewProviderTest(unittest.TestCase):
             panel._show_state(0)
             view = fem_part.visual.ViewObject
             self.assertEqual(view.TypeId, "MbDFEMGui::ViewProviderFEMPostPipeline")
-            view.Field = "von Mises Stress"
+            self.assertIs(fem_part.visual.MbDFEMSourcePipeline, legacy)
+            self.assertFalse(legacy.ViewObject.Visibility)
+            self.assertEqual(str(view.Field), "von Mises Stress")
 
             def material_binding():
                 # Inspect the native scene serialization without borrowing
@@ -1304,14 +1312,46 @@ class MbDFEMGuiViewProviderTest(unittest.TestCase):
             self.assertTrue(view.Visibility)
             self.assertTrue(view.ShowColorContour)
 
+            from PySide.QtGui import QImage
+
+            active_view = self.Gui.getDocument(self.document.Name).activeView()
+            active_view.viewAxonometric()
+            active_view.fitAll()
+
+            def rendered_image():
+                self.Gui.updateGui()
+                with tempfile.TemporaryDirectory() as directory:
+                    image_path = str(Path(directory) / "display.png")
+                    active_view.saveImage(image_path, 640, 480, "White")
+                    image = QImage(image_path)
+                    self.assertFalse(image.isNull())
+                    return image
+
+            def legend_region(image):
+                # Camera animations can still move the model between frames.
+                # Inspect the legend separately, below the navigation cube.
+                return image.copy(
+                    3 * image.width() // 4,
+                    image.height() // 3,
+                    image.width() // 4,
+                    2 * image.height() // 3,
+                )
+
+            with_legend = rendered_image()
             panel.legend_checkbox.setChecked(False)
             self.assertFalse(view.ShowLegend)
             self.assertTrue(view.ShowColorContour)
+            without_legend = rendered_image()
+            self.assertNotEqual(legend_region(with_legend), legend_region(without_legend))
+            panel.legend_checkbox.setChecked(True)
+            self.assertEqual(legend_region(with_legend), legend_region(rendered_image()))
+            panel.legend_checkbox.setChecked(False)
             panel.contour_checkbox.setChecked(False)
             self.assertFalse(panel.legend_checkbox.isEnabled())
             self.assertFalse(view.ShowColorContour)
             self.assertEqual(str(view.Field), selected_field)
             self.assertEqual(material_binding(), "OVERALL")
+            self.assertNotEqual(without_legend, rendered_image())
             view.updateColorBars()
             self.assertEqual(material_binding(), "OVERALL")
 
