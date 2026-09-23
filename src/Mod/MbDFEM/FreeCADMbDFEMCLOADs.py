@@ -456,6 +456,29 @@ def _diagram_vectors(fem_part, assembly, sample=None):
         nodes = load.get("nodes")
         if nodes is None:
             nodes = FreeCADMbDFEMEmbedded._fem_mesh_nodes(getattr(fem_part, "mesh", None))
+        if "cload_components" in load:
+            for records in load["cload_components"].values():
+                component_vectors = {}
+                for node_id, dof, value in records:
+                    vector = component_vectors.setdefault(node_id, App.Vector())
+                    vector[dof - 1] += value
+                for node_id, vector in component_vectors.items():
+                    if node_id in nodes and vector.Length > _ZERO_TOLERANCE:
+                        vectors.append(_DiagramVector(
+                            _global_point(placement, nodes[node_id]),
+                            _global_vector(placement, vector),
+                        ))
+            continue
+        axial_vectors = {}
+        for node_id, dof, value in (load.get("torque_axis_load") or {}).get("cloads", []):
+            local_vector = axial_vectors.setdefault(node_id, App.Vector())
+            local_vector[dof - 1] += value
+        for node_id, local_vector in axial_vectors.items():
+            if node_id in nodes and local_vector.Length > _ZERO_TOLERANCE:
+                vectors.append(_DiagramVector(
+                    _global_point(placement, nodes[node_id]),
+                    _global_vector(placement, local_vector),
+                ))
         cloads = load.get("cloads") or []
         if cloads:
             nodal_vectors = {}
@@ -516,15 +539,16 @@ def _diagram_vectors_from_matching_inp(fem_part, sample, placement):
     if not _matching_cload_frame_metadata(inp_file_name, mesh_signature):
         return None
 
-    nodal_vectors = _cload_vectors_from_inp_content(content)
+    nodal_vectors = _cload_vectors_from_inp_content(content, separate=True)
     if not nodal_vectors:
         return None
 
     vectors = []
-    for node_id in sorted(nodal_vectors):
+    for key in sorted(nodal_vectors):
+        node_id = key[1]
         if node_id not in nodes:
             return None
-        local_vector = nodal_vectors[node_id]
+        local_vector = nodal_vectors[key]
         if local_vector.Length <= _ZERO_TOLERANCE:
             continue
         origin = _global_point(placement, nodes[node_id])
@@ -561,7 +585,7 @@ def _matching_cload_frame_metadata(inp_file_name, mesh_signature):
     return not source or source == os.path.basename(inp_file_name)
 
 
-def _cload_vectors_from_inp_content(content):
+def _cload_vectors_from_inp_content(content, separate=False):
     markers = [
         FreeCADMbDFEMEmbedded._MBD_JOINT_CLOAD_MARKER.strip(),
         FreeCADMbDFEMEmbedded._MBD_LEGACY_JOINT_CYLINDER_LOAD_MARKER.strip(),
@@ -571,13 +595,18 @@ def _cload_vectors_from_inp_content(content):
         return {}
 
     vectors = {}
+    component = 0
     in_cload = False
     for raw_line in content[marker_at:].splitlines():
         line = raw_line.strip()
+        if line.startswith("** MbDFEM "):
+            component += 1
         if not line or line.startswith("**"):
             continue
         if line.startswith("*"):
             in_cload = line.upper().startswith("*CLOAD")
+            if in_cload:
+                component += 1
             continue
         if not in_cload:
             continue
@@ -592,7 +621,8 @@ def _cload_vectors_from_inp_content(content):
             continue
         if dof < 1 or dof > 3:
             continue
-        vector = vectors.setdefault(node_id, App.Vector())
+        key = (component, node_id) if separate else node_id
+        vector = vectors.setdefault(key, App.Vector())
         if dof == 1:
             vector.x += value
         elif dof == 2:
@@ -613,13 +643,27 @@ def _mbd_joint_cylindrical_hole_loads(fem_part, assembly, sample):
     placement = _mesh_placement_at_sample(fem_part, sample)
     for joint, _marker, sign in FreeCADMbDFEMEmbedded._part_joints_for_mbd_part(mbd_part, assembly):
         force = placement.Rotation.inverted().multVec(_sample_joint_force(joint, sample) * sign)
-        torque = App.Vector()
+        torque = placement.Rotation.inverted().multVec(
+            FreeCADMbDFreeBodyDiagram._sample_vector(
+                joint, ("txs", "tys", "tzs"), sample or (0, 0, 0.0, 0)
+            ) * sign
+        )
+        force_origin = FreeCADMbDFEMEmbedded._joint_force_origin_in_fem_part(joint, fem_part)
+        source_part = FreeCADMbDFEMEmbedded._mbd_part_containing_marker(getattr(joint, "markerI", None))
+        if sample is not None and source_part is not None:
+            source_placement = FreeCADMbDFreeBodyDiagram._placement_at_sample(source_part, sample)
+            target_placement = FreeCADMbDFreeBodyDiagram._placement_at_sample(mbd_part, sample)
+            force_origin = target_placement.inverse().multVec(
+                source_placement.multVec(joint.markerI.Placement.Base)
+            )
         for load in FreeCADMbDFEMEmbedded._joint_loads_for_fem_part(
             joint,
             mbd_part,
             nodes,
             force,
             torque,
+            force_origin=force_origin,
+            sample=sample,
         ):
             load["nodes"] = nodes
             loads.append(load)

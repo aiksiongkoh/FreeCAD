@@ -700,6 +700,24 @@ def _pipeline_field_names(pipeline):
     return [name for name in _property_enum_names(field) if name and name != "None"]
 
 
+def _results_display_settings(fem_part):
+    folder = fem_part.getResultsFolder()
+    view = getattr(folder, "ViewObject", None)
+    return (
+        bool(getattr(view, "Visibility", True)),
+        bool(getattr(view, "ShowColorContour", True)),
+        bool(getattr(view, "ShowLegend", True)),
+    )
+
+
+def _apply_results_display_settings(fem_part, pipeline):
+    visible, contour, legend = _results_display_settings(fem_part)
+    view = pipeline.ViewObject
+    view.ShowColorContour = contour
+    view.ShowLegend = legend
+    view.Visibility = visible
+
+
 def _ensure_visual_pipeline(fem_part, result, preferred_field=None):
     if result is None:
         return None
@@ -711,7 +729,10 @@ def _ensure_visual_pipeline(fem_part, result, preferred_field=None):
     pipeline = getattr(fem_part, "visual", None)
     if pipeline is None:
         try:
-            pipeline = document.addObject("Fem::FemPostPipeline", "Pipeline_CCX_Results")
+            pipeline = document.addObject(
+                "Fem::FemPostPipeline", "Pipeline_CCX_Results",
+                viewType="MbDFEMGui::ViewProviderFEMPostPipeline",
+            )
             fem_part.visual = pipeline
             try:
                 fem_part.addObject(pipeline)
@@ -756,7 +777,7 @@ def _ensure_visual_pipeline(fem_part, result, preferred_field=None):
         except Exception:
             pass
         try:
-            view_object.Visibility = True
+            _apply_results_display_settings(fem_part, pipeline)
         except Exception:
             pass
 
@@ -771,14 +792,6 @@ def _refresh_pipeline_legend(pipeline):
     if view_object is None:
         return
 
-    try:
-        view_object.Visibility = True
-    except Exception:
-        pass
-    try:
-        view_object.show()
-    except Exception:
-        pass
     try:
         view_object.updateMaterial()
     except Exception:
@@ -1109,6 +1122,19 @@ class FEMResultsTaskPanel:
         self.field_label = QtWidgets.QLabel()
         self.field_label.setObjectName("MbDFEMResultFieldLabel")
         display_layout.addWidget(self.field_label)
+        self.contour_checkbox = QtWidgets.QCheckBox("Show color contour")
+        self.legend_checkbox = QtWidgets.QCheckBox("Show legend")
+        folder_view = self.results_folder.ViewObject
+        self.contour_checkbox.setChecked(folder_view.ShowColorContour)
+        self.legend_checkbox.setChecked(folder_view.ShowLegend)
+        self.legend_checkbox.setEnabled(folder_view.ShowColorContour)
+        display_layout.addWidget(self.contour_checkbox)
+        display_layout.addWidget(self.legend_checkbox)
+        self.contour_checkbox.toggled.connect(self._set_display_options)
+        self.legend_checkbox.toggled.connect(self._set_display_options)
+        self.hide_results_button = QtWidgets.QPushButton("Hide results")
+        self.hide_results_button.clicked.connect(self._hide_results)
+        display_layout.addWidget(self.hide_results_button)
         playback_layout = QtWidgets.QHBoxLayout()
         self.play_button = QtWidgets.QPushButton("Play")
         self.stop_playback_button = QtWidgets.QPushButton("Stop")
@@ -1133,6 +1159,15 @@ class FEMResultsTaskPanel:
         self._configure()
         self._load_panel_state()
         self._refresh()
+
+    def _set_display_options(self, *args):
+        view = self.results_folder.ViewObject
+        view.ShowColorContour = self.contour_checkbox.isChecked()
+        view.ShowLegend = self.legend_checkbox.isChecked()
+        self.legend_checkbox.setEnabled(view.ShowColorContour)
+
+    def _hide_results(self):
+        self.results_folder.ViewObject.Visibility = False
 
     def getStandardButtons(self):
         from PySide import QtGui
@@ -1518,7 +1553,7 @@ class FEMResultsTaskPanel:
             )
         self._refresh_pipeline_task_widgets()
         for result in _linked_results(self.fem_part):
-            visible = result is current_result
+            visible = result is current_result and _results_display_settings(self.fem_part)[0]
             view_object = getattr(result, "ViewObject", None)
             if view_object is not None:
                 try:
@@ -1536,7 +1571,10 @@ class FEMResultsTaskPanel:
         visual_view = getattr(visual, "ViewObject", None)
         if visual_view is not None:
             try:
-                visual_view.Visibility = pipeline is not None
+                if pipeline is not None:
+                    _apply_results_display_settings(self.fem_part, pipeline)
+                else:
+                    visual_view.Visibility = False
             except Exception:
                 pass
         if pipeline is not None:

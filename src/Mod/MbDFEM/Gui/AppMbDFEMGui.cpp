@@ -9,6 +9,9 @@
 #include "ViewProviderFEMItem.h"
 #include "ViewProviderFEMPart.h"
 #include "ViewProviderFEMResultsFolder.h"
+#ifdef MBDFEM_WITH_VTK
+#include "ViewProviderFEMPostPipeline.h"
+#endif
 #include "ViewProviderMbDAction.h"
 #include "ViewProviderMbDAnimationParameters.h"
 #include "ViewProviderMbDAssembly.h"
@@ -50,6 +53,9 @@ PyMOD_INIT_FUNC(MbDFEMGui)
     // load dependent GUI module
     try {
         Base::Interpreter().runString("import PartGui");
+#ifdef MBDFEM_WITH_VTK
+        Base::Interpreter().runString("import FemGui");
+#endif
     }
     catch (const Base::Exception& e) {
         PyErr_SetString(PyExc_ImportError, e.what());
@@ -60,6 +66,9 @@ PyMOD_INIT_FUNC(MbDFEMGui)
     MbDFEMGui::ViewProviderFEMItem::init();
     MbDFEMGui::ViewProviderFEMPart::init();
     MbDFEMGui::ViewProviderFEMResultsFolder::init();
+#ifdef MBDFEM_WITH_VTK
+    MbDFEMGui::ViewProviderFEMPostPipeline::init();
+#endif
     MbDFEMGui::ViewProviderMbDAssembly::init();
     MbDFEMGui::ViewProviderMbDPart::init();
     MbDFEMGui::ViewProviderMbDMarker::init();

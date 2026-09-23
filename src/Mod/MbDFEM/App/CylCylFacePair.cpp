@@ -1,6 +1,17 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #include "CylCylFacePair.h"
+#include "MbDJoint.h"
+#include "MbDPart.h"
+#include "MbDMarker.h"
+#include "MbDAssembly.h"
+#include <App/Document.h>
+#include <BRepAdaptor_Surface.hxx>
+#include <BRep_Tool.hxx>
+#include <TopExp_Explorer.hxx>
+#include <TopoDS.hxx>
+#include <gp_Cylinder.hxx>
+#include <unordered_set>
 
 #include <BRepBuilderAPI_MakeVertex.hxx>
 #include <BRepExtrema_DistShapeShape.hxx>
@@ -13,6 +24,9 @@
 #include <string>
 #include <utility>
 #include <gp_Pnt.hxx>
+#include <Eigen/SVD>
+#include <stdexcept>
+#include <unordered_map>
 
 PROPERTY_SOURCE(MbDFEM::CylCylFacePair, MbDFEM::FacePair)
 
@@ -65,7 +79,289 @@ bool pointTouchesFace(const Base::Vector3d& point, const TopoDS_Face& face, doub
     return distance.IsDone() && distance.Value() <= tolerance;
 }
 
+using Pair = MbDFEM::CylCylFacePair;
+
+struct CylinderReference
+{
+    Pair::CylindricalFaceGeometry geometry;
+    double radius;
+};
+
+CylinderReference cylinderReference(const App::PropertyLinkSub& link)
+{
+    const auto* part = freecad_cast<MbDFEM::MbDPart*>(link.getValue());
+    if (!part || link.getSubValues().empty()) {
+        throw std::runtime_error("Cylindrical FacePair requires two part face references.");
+    }
+    const auto face = TopoDS::Face(part->Shape.getShape().getSubShape(link.getSubValues().front().c_str()));
+    BRepAdaptor_Surface surface(face);
+    if (surface.GetType() != GeomAbs_Cylinder) {
+        throw std::runtime_error("FacePair reference is not cylindrical.");
+    }
+    const auto cylinder = surface.Cylinder();
+    const auto point = cylinder.Location();
+    const auto axis = cylinder.Axis().Direction();
+    CylinderReference result;
+    auto& geometry = result.geometry;
+    geometry.axisPoint = Base::Vector3d(point.X(), point.Y(), point.Z());
+    geometry.axisDirection = Base::Vector3d(axis.X(), axis.Y(), axis.Z());
+    result.radius = cylinder.Radius();
+    geometry.axialMin = std::numeric_limits<double>::infinity();
+    geometry.axialMax = -geometry.axialMin;
+    for (TopExp_Explorer vertices(face, TopAbs_VERTEX); vertices.More(); vertices.Next()) {
+        const auto p = BRep_Tool::Pnt(TopoDS::Vertex(vertices.Current()));
+        const double z = (Base::Vector3d(p.X(), p.Y(), p.Z()) - geometry.axisPoint).Dot(geometry.axisDirection);
+        geometry.axialMin = std::min(geometry.axialMin, z);
+        geometry.axialMax = std::max(geometry.axialMax, z);
+    }
+    if (!std::isfinite(geometry.axialMin) || !std::isfinite(geometry.axialMax)) {
+        throw std::runtime_error("Cylinder has no bounded axial span.");
+    }
+    gp_Pnt sample;
+    gp_Vec du, dv;
+    surface.D1((surface.FirstUParameter() + surface.LastUParameter()) * 0.5,
+               (surface.FirstVParameter() + surface.LastVParameter()) * 0.5, sample, du, dv);
+    auto normal = du.Crossed(dv);
+    if (face.Orientation() == TopAbs_REVERSED) {
+        normal.Reverse();
+    }
+    geometry.samplePoint = Base::Vector3d(sample.X(), sample.Y(), sample.Z());
+    geometry.outwardNormal = Base::Vector3d(normal.X(), normal.Y(), normal.Z());
+    const double midpoint = (geometry.axialMin + geometry.axialMax) * 0.5;
+    geometry.axisPoint += geometry.axisDirection * midpoint;
+    geometry.axialMin -= midpoint;
+    geometry.axialMax -= midpoint;
+    return result;
+}
+
+const MbDFEM::MbDPart* markerPart(const MbDFEM::MbDMarker* marker)
+{
+    if (marker) {
+        for (const auto* object : marker->getDocument()->getObjects()) {
+            const auto* part = freecad_cast<const MbDFEM::MbDPart*>(object);
+            if (part) {
+                const auto& markers = part->markers.getValues();
+                if (std::find(markers.begin(), markers.end(), marker) != markers.end()) {
+                    return part;
+                }
+            }
+        }
+    }
+    throw std::runtime_error("Joint marker has no owning MbDPart.");
+}
+
+double sampleValue(const App::PropertyFloatList& series, int index)
+{
+    const auto& values = series.getValues();
+    return values.empty() ? 0.0 : values[std::clamp(index, 0, static_cast<int>(values.size()) - 1)];
+}
+
+Base::Placement sampledPlacement(const MbDFEM::MbDPart& part, int lower, int upper, double ratio)
+{
+    Base::Placement result = part.globalPlacement();
+    if (lower < 0) {
+        return result;
+    }
+    Base::Placement assemblyPlacement;
+    for (const auto* object : part.getDocument()->getObjects()) {
+        const auto* assembly = freecad_cast<const MbDFEM::MbDAssembly*>(object);
+        if (assembly) {
+            const auto contains = [&part](const auto& list) {
+                const auto& items = list.getValues();
+                return std::find(items.begin(), items.end(), &part) != items.end();
+            };
+            if (contains(assembly->parts) || contains(assembly->fixedparts)) {
+                assemblyPlacement = assembly->globalPlacement();
+                break;
+            }
+        }
+    }
+    const auto sample = [=](const auto& series) {
+        return sampleValue(series, lower) * (1.0 - ratio) + sampleValue(series, upper) * ratio;
+    };
+    if (!part.xs.getValues().empty() && !part.ys.getValues().empty() && !part.zs.getValues().empty()) {
+        Base::Vector3d position(sample(part.xs), sample(part.ys), sample(part.zs));
+        assemblyPlacement.multVec(position, position);
+        result.setPosition(position);
+    }
+    if (!part.bryxs.getValues().empty() && !part.bryys.getValues().empty() && !part.bryzs.getValues().empty()) {
+        const auto rotation = [&part](int index) {
+            return Base::Rotation(Base::Vector3d::UnitZ, sampleValue(part.bryzs, index))
+                * Base::Rotation(Base::Vector3d::UnitY, sampleValue(part.bryys, index))
+                * Base::Rotation(Base::Vector3d::UnitX, sampleValue(part.bryxs, index));
+        };
+        result.setRotation(assemblyPlacement.getRotation()
+                           * Base::Rotation::slerp(rotation(lower), rotation(upper), ratio));
+    }
+    return result;
+}
+
+// Check the wrench without coalescing the records used for debugging/export.
+void checkWrench(const std::vector<Pair::HoleNode>& nodes,
+                 const Base::Vector3d& center,
+                 const std::vector<Pair::CLOAD>& loads,
+                 const Base::Vector3d& force,
+                 const Base::Vector3d& torque,
+                 const char* component)
+{
+    std::unordered_map<int, Base::Vector3d> positions;
+    double length = 0.0;
+    for (const auto& node : nodes) {
+        positions.emplace(node.id, node.position);
+        length = std::max(length, (node.position - center).Length());
+    }
+    Base::Vector3d resultant;
+    Base::Vector3d moment;
+    for (const auto& load : loads) {
+        Base::Vector3d value;
+        value[load.dof - 1] = load.value;
+        resultant += value;
+        moment += (positions.at(load.nodeId) - center).Cross(value);
+    }
+    const double forceTolerance = 1.0e-9 * std::max(1.0, force.Length());
+    const double momentTolerance = 1.0e-9 * std::max({1.0, torque.Length(), force.Length() * length});
+    if (!std::isfinite(resultant.Length()) || !std::isfinite(moment.Length())
+        || (resultant - force).Length() > forceTolerance
+        || (moment - torque).Length() > momentTolerance) {
+        throw std::runtime_error(std::string("Hole ") + component
+                                 + " cannot satisfy force/moment equilibrium; refine the face mesh.");
+    }
+}
+
+// Each column is one region's nodal force basis. Solve all six equilibrium
+// rows (identically zero rows are harmless) for minimum coefficient norm.
+std::vector<Pair::CLOAD> torqueCLOADs(const std::vector<Pair::HoleNode>& nodes,
+                                     const Base::Vector3d& center,
+                                     const Base::Vector3d& xAxis,
+                                     const Base::Vector3d& zAxis,
+                                     const Base::Vector3d& torque,
+                                     bool axial)
+{
+    const Base::Vector3d yAxis = zAxis.Cross(xAxis);
+    const int count = axial ? 8 : 4;
+    Eigen::MatrixXd matrix = Eigen::MatrixXd::Zero(6, count);
+    struct Basis { int node; int region; Base::Vector3d force; };
+    std::vector<Basis> bases;
+    double length = 0.0;
+    for (const auto& node : nodes) {
+        const Base::Vector3d relative = node.position - center;
+        length = std::max(length, relative.Length());
+        const double x = relative.Dot(xAxis);
+        const double y = relative.Dot(yAxis);
+        const double z = relative.Dot(zAxis);
+        const double radius = std::hypot(x, y);
+        if (radius == 0.0) {
+            continue;
+        }
+        int region;
+        Base::Vector3d basis;
+        if (axial) {
+            const int quadrant = x >= 0.0 ? (y >= 0.0 ? 0 : 3) : (y >= 0.0 ? 1 : 2);
+            region = quadrant + (z >= 0.0 ? 0 : 4);
+            basis = zAxis.Cross(relative - zAxis * z) / radius;
+        }
+        else {
+            if ((z >= 0.0 && x < 0.0) || (z < 0.0 && x >= 0.0)) {
+                continue;
+            }
+            region = (z >= 0.0 ? 0 : 2) + (y >= 0.0 ? 0 : 1);
+            basis = xAxis * (z * x / radius);
+        }
+        const Base::Vector3d moment = relative.Cross(basis);
+        for (int row = 0; row < 3; ++row) {
+            matrix(row, region) += basis[row];
+            matrix(row + 3, region) += moment[row];
+        }
+        bases.push_back({node.id, region, basis});
+    }
+    length = length > 0.0 ? length : 1.0;
+    matrix.bottomRows(3) /= length;
+    Eigen::VectorXd rhs = Eigen::VectorXd::Zero(6);
+    for (int row = 0; row < 3; ++row) {
+        rhs[row + 3] = torque[row] / length;
+    }
+    const Eigen::VectorXd coefficients = matrix.jacobiSvd(Eigen::ComputeThinU | Eigen::ComputeThinV).solve(rhs);
+    std::vector<Pair::NodalForce> forces;
+    for (const auto& basis : bases) {
+        forces.push_back({basis.node, basis.force * coefficients[basis.region]});
+    }
+    std::vector<Pair::CLOAD> result;
+    appendCLOADs(result, forces, 0.0);
+    checkWrench(nodes, center, result, Base::Vector3d(), torque, axial ? "axial torque" : "bending torque");
+    return result;
+}
+
 }  // namespace
+
+MbDFEM::CylCylFacePair::JointHoleLoad MbDFEM::CylCylFacePair::jointHoleLoad(
+    const MbDJoint& joint, const MbDPart& part, const std::vector<HoleNode>& nodes,
+    const std::vector<CylCylFacePair*>& participatingPairs, int lower, int upper, double ratio) const
+{
+    const auto* markerI = freecad_cast<MbDMarker*>(joint.markerI.getValue());
+    const auto* markerJ = freecad_cast<MbDMarker*>(joint.markerJ.getValue());
+    const auto* partI = markerPart(markerI);
+    const auto* partJ = markerPart(markerJ);
+    if (partI == partJ || (&part != partI && &part != partJ)) {
+        throw std::runtime_error("Hole part does not identify one side of the joint.");
+    }
+    std::unordered_set<const CylCylFacePair*> participants;
+    for (const auto* pair : participatingPairs) {
+        if (pair && ((pair->faceI.getValue() == partI && pair->faceJ.getValue() == partJ)
+                     || (pair->faceI.getValue() == partJ && pair->faceJ.getValue() == partI))) {
+            participants.insert(pair);
+        }
+    }
+    if (participants.find(this) == participants.end()) {
+        throw std::runtime_error("Hole FacePair is not a participant of this joint.");
+    }
+    const auto referenceI = cylinderReference(faceI);
+    const auto referenceJ = cylinderReference(faceJ);
+    const auto roles = classifyFaces(referenceI.geometry, referenceJ.geometry);
+    const bool sideI = faceI.getValue() == &part;
+    if (!(sideI ? roles.faceIIsHole() : roles.faceJIsHole())) {
+        throw std::runtime_error("Requested FacePair side is not a cylindrical hole.");
+    }
+    const auto& reference = sideI ? referenceI : referenceJ;
+    const auto& geometry = reference.geometry;
+    if (upper < 0) {
+        upper = lower;
+    }
+    if (!std::isfinite(ratio) || ratio < 0.0 || ratio > 1.0) {
+        throw std::runtime_error("Joint sample interpolation ratio must be between zero and one.");
+    }
+    const auto sample = [=](const auto& series) {
+        return sampleValue(series, lower) * (1.0 - ratio) + sampleValue(series, upper) * ratio;
+    };
+    const auto placement = sampledPlacement(part, lower, upper, ratio);
+    const auto sourcePlacement = sampledPlacement(*partI, lower, upper, ratio);
+    const auto inverse = placement.inverse();
+    Base::Vector3d markerOrigin;
+    sourcePlacement.multVec(markerI->Placement.getValue().getPosition(), markerOrigin);
+    inverse.multVec(markerOrigin, markerOrigin);
+    const double share = (&part == partI ? 1.0 : -1.0) / static_cast<double>(participants.size());
+    JointHoleLoad result;
+    result.origin = geometry.axisPoint;
+    result.zAxis = geometry.axisDirection;
+    inverse.getRotation().multVec(Base::Vector3d(sample(joint.fxs), sample(joint.fys), sample(joint.fzs)) * share,
+                                  result.force);
+    inverse.getRotation().multVec(Base::Vector3d(sample(joint.txs), sample(joint.tys), sample(joint.tzs)) * share,
+                                  result.torque);
+    result.torque += (markerOrigin - result.origin).Cross(result.force);
+    const auto forceSide = result.force - result.zAxis * result.force.Dot(result.zAxis);
+    result.xAxis = normalizedPerpendicularAxis(result.zAxis,
+        forceSide.Length() > 1.0e-12 ? forceSide : result.torque.Cross(result.zAxis));
+    result.yAxis = result.zAxis.Cross(result.xAxis);
+    for (const auto& node : holeSurfaceNodes(nodes, result.origin, result.zAxis, reference.radius,
+                                            geometry.axialMin, geometry.axialMax)) {
+        const auto relative = node.position - result.origin;
+        const double x = relative.Dot(result.xAxis), y = relative.Dot(result.yAxis);
+        const int quadrant = x >= 0.0 ? (y >= 0.0 ? 0 : 3) : (y >= 0.0 ? 1 : 2);
+        result.octants[quadrant + (relative.Dot(result.zAxis) >= 0.0 ? 0 : 4)].push_back(node.id);
+    }
+    result.components = holeCLOADs(nodes, result.origin, result.zAxis, reference.radius,
+                                   geometry.axialMin, geometry.axialMax, result.force, result.torque);
+    return result;
+}
 
 MbDFEM::CylCylFacePair::CylCylFacePair(App::DocumentObject* objectI,
                                        std::string subNameI,
@@ -498,34 +794,72 @@ MbDFEM::CylCylFacePair::holeCLOADs(const std::vector<HoleNode>& nodes,
                                    const Base::Vector3d& centerForce,
                                    double tolerance) const
 {
-    if (tolerance < 0.0) {
-        tolerance = std::max({std::abs(holeRadius), std::abs(axialMax - axialMin), 1.0}) * 1.0e-6;
+    // Compatibility API: the finalized overload validates the full wrench.
+    try {
+        auto loads = holeCLOADs(nodes, holeCenter, holeAxis, holeRadius, axialMin,
+                                axialMax, centerForce, Base::Vector3d(), tolerance);
+        loads.transverseForce.insert(loads.transverseForce.end(),
+                                     loads.axialForce.begin(), loads.axialForce.end());
+        return loads.transverseForce;
     }
+    catch (const std::runtime_error&) {
+        return {};
+    }
+}
 
-    std::vector<CLOAD> cloads;
-    appendCLOADs(cloads,
-                 holeNodalForces(nodes, holeCenter, holeAxis, holeRadius, axialMin, axialMax, centerForce, tolerance),
-                 tolerance);
-
+MbDFEM::CylCylFacePair::HoleLoadComponents
+MbDFEM::CylCylFacePair::holeCLOADs(const std::vector<HoleNode>& nodes,
+                                 const Base::Vector3d& holeCenter,
+                                 const Base::Vector3d& holeAxis,
+                                 double holeRadius,
+                                 double axialMin,
+                                 double axialMax,
+                                 const Base::Vector3d& centerForce,
+                                 const Base::Vector3d& centerTorque,
+                                 double tolerance) const
+{
+    if (holeAxis.Length() <= Base::Vector3d::epsilon() || holeRadius <= 0.0) {
+        throw std::runtime_error("Invalid cylindrical hole geometry.");
+    }
     Base::Vector3d zAxis = holeAxis;
-    if (zAxis.Length() <= Base::Vector3d::epsilon()) {
-        return cloads;
-    }
     zAxis.Normalize();
-    const double forceAxis = centerForce.Dot(zAxis);
-    const Base::Vector3d forceXAxis = centerForce - zAxis * forceAxis;
-    appendCLOADs(cloads,
-                 holeAxisNodalForces(nodes,
-                                      holeCenter,
-                                      zAxis,
-                                      forceXAxis,
-                                      holeRadius,
-                                      axialMin,
-                                      axialMax,
-                                      forceAxis,
-                                      tolerance),
-                 tolerance);
-    return cloads;
+    const auto surface = holeSurfaceNodes(nodes, holeCenter, zAxis, holeRadius,
+                                          axialMin, axialMax, tolerance);
+    const double forceZ = centerForce.Dot(zAxis);
+    const Base::Vector3d forceSide = centerForce - zAxis * forceZ;
+    const double torqueZ = centerTorque.Dot(zAxis);
+    const Base::Vector3d torqueSide = centerTorque - zAxis * torqueZ;
+    const Base::Vector3d preferredX = forceSide.Length() > 1.0e-12
+        ? forceSide : torqueSide.Cross(zAxis);
+    const Base::Vector3d xAxis = normalizedPerpendicularAxis(zAxis, preferredX);
+    HoleLoadComponents result;
+    if (forceSide.Length() > 1.0e-12) {
+        appendCLOADs(result.transverseForce,
+                     holeNodalForces(surface, holeCenter, zAxis, holeRadius,
+                                     axialMin, axialMax, centerForce, tolerance), 0.0);
+    }
+    if (std::abs(forceZ) > 1.0e-12) {
+        appendCLOADs(result.axialForce,
+                     holeAxisNodalForces(surface, holeCenter, zAxis, xAxis, holeRadius,
+                                         axialMin, axialMax, forceZ, tolerance), 0.0);
+    }
+    if (torqueSide.Length() > 1.0e-12) {
+        Base::Vector3d torqueXAxis = torqueSide.Cross(zAxis);
+        torqueXAxis.Normalize();
+        result.bendingTorque = torqueCLOADs(surface, holeCenter, torqueXAxis, zAxis, torqueSide, false);
+    }
+    if (std::abs(torqueZ) > 1.0e-12) {
+        result.axialTorque = torqueCLOADs(surface, holeCenter, xAxis, zAxis, zAxis * torqueZ, true);
+    }
+    checkWrench(surface, holeCenter, result.transverseForce, forceSide, Base::Vector3d(), "transverse force");
+    checkWrench(surface, holeCenter, result.axialForce, zAxis * forceZ, Base::Vector3d(), "axial force");
+    // Validate the combined wrench while retaining every separate CLOAD record.
+    auto all = result.transverseForce;
+    all.insert(all.end(), result.axialForce.begin(), result.axialForce.end());
+    all.insert(all.end(), result.bendingTorque.begin(), result.bendingTorque.end());
+    all.insert(all.end(), result.axialTorque.begin(), result.axialTorque.end());
+    checkWrench(surface, holeCenter, all, centerForce, centerTorque, "combined load");
+    return result;
 }
 
 std::vector<MbDFEM::CylCylFacePair::CLOAD>

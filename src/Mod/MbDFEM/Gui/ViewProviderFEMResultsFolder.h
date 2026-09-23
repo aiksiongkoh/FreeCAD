@@ -18,6 +18,15 @@ public:
 
     std::vector<App::DocumentObject*> claimChildren() const override;
     bool doubleClicked() override;
+    bool isShow() const override;
+    void onChanged(const App::Property* prop) override;
+    void updateData(const App::Property* prop) override;
+
+    App::PropertyBool ShowColorContour;
+    App::PropertyBool ShowLegend;
+
+private:
+    void synchronizeDisplay();
 };
 
 }  // namespace MbDFEMGui

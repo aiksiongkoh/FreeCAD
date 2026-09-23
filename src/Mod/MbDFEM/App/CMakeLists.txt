@@ -82,6 +82,7 @@ target_include_directories(
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_BINARY_DIR}/src
     ${CMAKE_CURRENT_BINARY_DIR}
+    ${EIGEN3_INCLUDE_DIR}
 )
 target_link_libraries(MbDFEM ${MbDFEM_LIBS})
 
