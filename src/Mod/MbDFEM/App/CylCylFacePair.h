@@ -8,11 +8,14 @@
 
 #include <string>
 #include <vector>
+#include <array>
 
 class TopoDS_Face;
 
 namespace MbDFEM
 {
+class MbDJoint;
+class MbDPart;
 
 class MbDFEMExport CylCylFacePair: public FacePair
 {
@@ -64,6 +67,31 @@ public:
         int dof = 0;
         double value = 0.0;
     };
+
+    struct HoleLoadComponents
+    {
+        std::vector<CLOAD> transverseForce;
+        std::vector<CLOAD> axialForce;
+        std::vector<CLOAD> bendingTorque;
+        std::vector<CLOAD> axialTorque;
+    };
+
+    struct JointHoleLoad
+    {
+        Base::Vector3d origin, xAxis, yAxis, zAxis;
+        Base::Vector3d force, torque;
+        std::array<std::vector<int>, 8> octants;
+        HoleLoadComponents components;
+    };
+
+    // Finalized domain entry point: geometry, reaction sampling/sign, frame
+    // conversion, equal sharing, moment transfer, discretization and validation.
+    // lower < 0 uses current placements and the first reaction sample.
+    JointHoleLoad jointHoleLoad(const MbDJoint& joint,
+                                const MbDPart& part,
+                                const std::vector<HoleNode>& nodes,
+                                const std::vector<CylCylFacePair*>& participatingPairs,
+                                int lower = -1, int upper = -1, double ratio = 0.0) const;
 
     struct PinCoverage
     {
@@ -136,6 +164,19 @@ public:
                                       double axialMax,
                                       double forceAxis,
                                       double tolerance = -1.0) const;
+
+    // All vectors and the torque reference point are in mesh coordinates.
+    // Throws if any requested component cannot be represented in equilibrium.
+    // Contributions remain separate even when they share a node and DOF.
+    HoleLoadComponents holeCLOADs(const std::vector<HoleNode>& nodes,
+                                 const Base::Vector3d& holeCenter,
+                                 const Base::Vector3d& holeAxis,
+                                 double holeRadius,
+                                 double axialMin,
+                                 double axialMax,
+                                 const Base::Vector3d& centerForce,
+                                 const Base::Vector3d& centerTorque,
+                                 double tolerance = -1.0) const;
 
     std::vector<NodalForce> pinNodalForces(const std::vector<HoleNode>& pinNodes,
                                            const Base::Vector3d& pinCenter,

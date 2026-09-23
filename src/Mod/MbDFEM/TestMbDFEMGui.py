@@ -1248,6 +1248,141 @@ class MbDFEMGuiViewProviderTest(unittest.TestCase):
             FreeCADMbDFEMResultsPanel._ensure_visual_pipeline = original_ensure_pipeline
             panel.reject()
 
+    def test_results_visibility_and_display_options_survive_state_changes(self):
+        from unittest.mock import patch
+        import re
+        import Fem
+        from femobjects import result_mechanical
+        import FreeCADMbDFEMResultsPanel as Results
+
+        assembly = self.document.addObject("MbDFEM::MbDAssembly", "Assembly")
+        part = self.document.addObject("MbDFEM::MbDPart", "Part")
+        assembly.addPart(part)
+        assembly.times = [0.0, 0.25]
+        part.xs = [0.0, 1000.0]
+        part.ys = part.zs = [0.0, 0.0]
+        fem_part = self.document.addObject("MbDFEM::FEMPart", "FEMPart")
+        fem_part.mbdItem = part
+        mesh = Fem.FemMesh()
+        for xyz in ((0, 0, 0), (10, 0, 0), (0, 10, 0), (0, 0, 10)):
+            mesh.addNode(*xyz)
+        mesh.addVolume([1, 2, 3, 4])
+        original_mesh = self.document.addObject("Fem::FemMeshObject", "OriginalMesh")
+        original_mesh.FemMesh = mesh
+        fem_part.mesh = original_mesh
+        original_mesh.ViewObject.Visibility = True
+        for index in range(2):
+            result = self.document.addObject("Fem::FemResultObjectPython", f"Result{index}")
+            result_mechanical.ResultMechanical(result)
+            result.Mesh = self.document.addObject("Fem::FemMeshObject", f"ResultMesh{index}")
+            result.Mesh.FemMesh = mesh
+            result.NodeNumbers = [1, 2, 3, 4]
+            result.vonMises = [1.0, 2.0, 3.0, 4.0]
+            Results._assign_result_for_state(fem_part, index, result)
+        folder = fem_part.ensureResultsFolder()
+        self.document.recompute()
+        with patch.object(Results.FreeCADMbDBackend, "fem_files_freshness_warning", return_value=""):
+            panel = Results.FEMResultsTaskPanel(folder)
+        panel._suppress_fem_freshness_warning = True
+
+        try:
+            panel._show_state(0)
+            view = fem_part.visual.ViewObject
+            self.assertEqual(view.TypeId, "MbDFEMGui::ViewProviderFEMPostPipeline")
+            view.Field = "von Mises Stress"
+
+            def material_binding():
+                # Inspect the native scene serialization without borrowing
+                # Coin nodes across the Pivy wrapper's ownership boundary.
+                match = re.search(r"MaterialBinding\s*\{\s*value\s+(\w+)", view.toString())
+                self.assertIsNotNone(match)
+                return match.group(1)
+
+            selected_field = str(view.Field)
+            self.assertEqual(material_binding(), "PER_VERTEX_INDEXED")
+            self.assertTrue(folder.ViewObject.isVisible())
+            self.assertTrue(view.Visibility)
+            self.assertTrue(view.ShowColorContour)
+
+            panel.legend_checkbox.setChecked(False)
+            self.assertFalse(view.ShowLegend)
+            self.assertTrue(view.ShowColorContour)
+            panel.contour_checkbox.setChecked(False)
+            self.assertFalse(panel.legend_checkbox.isEnabled())
+            self.assertFalse(view.ShowColorContour)
+            self.assertEqual(str(view.Field), selected_field)
+            self.assertEqual(material_binding(), "OVERALL")
+            view.updateColorBars()
+            self.assertEqual(material_binding(), "OVERALL")
+
+            # Ordinary FEM pipelines must retain their original interface.
+            ordinary = self.document.addObject("Fem::FemPostPipeline", "OrdinaryPipeline")
+            self.assertNotIn("ShowColorContour", ordinary.ViewObject.PropertiesList)
+            self.assertNotIn("ShowLegend", ordinary.ViewObject.PropertiesList)
+            ordinary.ViewObject.hide()
+            self.Gui.updateGui()
+            self.assertEqual(material_binding(), "OVERALL")
+
+            # Exercise the same command as Space in the tree.
+            self.Gui.Selection.clearSelection()
+            self.Gui.Selection.addSelection(folder)
+            self.Gui.runCommand("Std_ToggleVisibility", 0)
+            self.assertFalse(folder.ViewObject.isVisible())
+            self.assertFalse(view.Visibility)
+            panel._show_state(1)
+            panel.start_state_spin.setValue(0)
+            panel._play_results()
+            panel._play_next_state()
+            panel._stop_playback()
+            self.Gui.updateGui()  # Includes deferred color-bar refreshes.
+            self.assertFalse(view.Visibility)
+            self.assertFalse(view.ShowColorContour)
+            self.assertFalse(view.ShowLegend)
+
+            self.Gui.runCommand("Std_ToggleVisibility", 0)
+            self.assertTrue(folder.ViewObject.isVisible())
+            self.assertTrue(view.Visibility)
+            self.assertFalse(view.ShowColorContour)
+            panel.contour_checkbox.setChecked(True)
+            self.assertTrue(panel.legend_checkbox.isEnabled())
+            self.assertFalse(panel.legend_checkbox.isChecked())
+            self.assertTrue(view.ShowColorContour)
+            self.assertTrue(original_mesh.ViewObject.Visibility)
+            self.assertEqual(material_binding(), "PER_VERTEX_INDEXED")
+            panel.hide_results_button.click()
+            self.assertFalse(view.Visibility)
+        finally:
+            panel.reject()
+
+        with patch.object(Results.FreeCADMbDBackend, "fem_files_freshness_warning", return_value=""):
+            reopened = Results.FEMResultsTaskPanel(folder)
+        reopened._suppress_fem_freshness_warning = True
+        try:
+            self.assertTrue(reopened.contour_checkbox.isChecked())
+            self.assertFalse(reopened.legend_checkbox.isChecked())
+            self.assertFalse(fem_part.visual.ViewObject.Visibility)
+        finally:
+            reopened.reject()
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / "ResultsDisplay.FCStd")
+            part_name = fem_part.Name
+            self.document.recompute()
+            self.document.saveAs(path)
+            App.closeDocument(self.document.Name)
+            self.document = App.openDocument(path)
+            restored = self.document.getObject(part_name)
+            self.assertEqual(restored.visual.ViewObject.TypeId,
+                             "MbDFEMGui::ViewProviderFEMPostPipeline")
+            restored_folder = restored.getResultsFolder()
+            self.assertFalse(restored_folder.ViewObject.isVisible())
+            self.assertFalse(restored.visual.ViewObject.Visibility)
+            self.assertTrue(restored_folder.ViewObject.ShowColorContour)
+            self.assertFalse(restored_folder.ViewObject.ShowLegend)
+            restored_folder.ViewObject.show()
+            self.assertTrue(restored.visual.ViewObject.Visibility)
+            self.assertFalse(restored.visual.ViewObject.ShowLegend)
+
     def test_results_task_panel_labels_active_stress_field_with_units(self):
         import FreeCADMbDFEMResultsPanel
         from PySide import QtWidgets

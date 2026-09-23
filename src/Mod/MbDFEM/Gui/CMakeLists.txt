@@ -6,6 +6,11 @@ set(MbDFEMGui_LIBS
     FreeCADGui
 )
 
+if(BUILD_FEM_VTK)
+    generate_from_py(ViewProviderFEMPostPipeline)
+    list(APPEND MbDFEMGui_LIBS FemGui ${VTK_LIBRARIES})
+endif()
+
 set(MbDFEMGui_SRCS
     AppMbDFEMGui.cpp
     ViewProviderFEMAssembly.cpp
@@ -42,7 +47,21 @@ set(MbDFEMGui_SRCS
     ViewProviderMbDSimulationParameters.h
 )
 
+if(BUILD_FEM_VTK)
+    list(APPEND MbDFEMGui_SRCS
+        ViewProviderFEMPostPipeline.cpp
+        ViewProviderFEMPostPipeline.h
+        ViewProviderFEMPostPipeline.pyi
+        ViewProviderFEMPostPipelinePyImp.cpp
+    )
+endif()
+
 add_library(MbDFEMGui SHARED ${MbDFEMGui_SRCS})
+
+if(BUILD_FEM_VTK)
+    target_compile_definitions(MbDFEMGui PRIVATE MBDFEM_WITH_VTK)
+    target_include_directories(MbDFEMGui PRIVATE ${VTK_INCLUDE_DIRS})
+endif()
 
 target_include_directories(
     MbDFEMGui
@@ -50,6 +69,7 @@ target_include_directories(
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_BINARY_DIR}
     ${CMAKE_BINARY_DIR}/src
+    ${CMAKE_CURRENT_BINARY_DIR}
 )
 
 target_link_libraries(MbDFEMGui ${MbDFEMGui_LIBS})

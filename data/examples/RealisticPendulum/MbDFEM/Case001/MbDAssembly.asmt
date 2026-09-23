@@ -53,15 +53,15 @@ Assembly
 				Name
 					LongPendulum_MbDPart_MassMarker
 				Position3D
-					0	0	0.0953891309750688	
+					0	0	0.0958332539483033	
 				RotationMatrix
 					0	1	0	
 					0	0	1	
 					1	0	0	
 				Mass
-					0.340536117989625
+					0.323642692087959
 				MomentOfInertias
-					5.08360212774631e-05	0.00137814154780223	0.0014239693591132	
+					5.06457033330973e-05	0.00133831785408708	0.0013840567080091	
 				Density
 					7900
 			RefPoints
