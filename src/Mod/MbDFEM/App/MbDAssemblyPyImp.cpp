@@ -6,10 +6,12 @@
 #include <App/DocumentObjectPy.h>
 
 #include "MbDAction.h"
+#include "MbDAnimationParameters.h"
+#include "MbDGravity.h"
 #include "MbDJoint.h"
 #include "MbDMotion.h"
-#include "MbDParameters.h"
 #include "MbDPart.h"
+#include "MbDSimulationParameters.h"
 
 std::string MbDFEM::MbDAssemblyPy::representation() const
 {

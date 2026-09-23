@@ -4,6 +4,8 @@
 
 #include "FEMItem.h"
 
+#include <App/PropertyLinks.h>
+
 namespace MbDFEM
 {
 
@@ -12,8 +14,10 @@ class MbDFEMExport FEMJoint: public FEMItem
     PROPERTY_HEADER_WITH_OVERRIDE(MbDFEM::FEMJoint);
 
 public:
-    FEMJoint() = default;
+    FEMJoint();
     ~FEMJoint() override = default;
+
+    App::PropertyLinkList facePairs;
 };
 
 }  // namespace MbDFEM

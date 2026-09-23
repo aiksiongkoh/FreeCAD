@@ -22,11 +22,13 @@
 #include <Base/Placement.h>
 
 #include "MbDAssembly.h"
+#include "MbDAnimationParameters.h"
+#include "MbDGravity.h"
 #include "MbDJoint.h"
 #include "MbDMassMarker.h"
 #include "MbDMarker.h"
-#include "MbDParameters.h"
 #include "MbDPart.h"
+#include "MbDSimulationParameters.h"
 
 namespace
 {

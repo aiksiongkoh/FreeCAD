@@ -14,7 +14,7 @@
 #include <QTimer>
 
 #include <Mod/MbDFEM/App/MbDAssembly.h>
-#include <Mod/MbDFEM/App/MbDParameters.h>
+#include <Mod/MbDFEM/App/MbDGravity.h>
 
 #include "ViewProviderUtils.h"
 

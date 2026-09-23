@@ -19,6 +19,9 @@ public:
     FEMPart();
     ~FEMPart() override = default;
     App::PropertyLink mbdItem;
+    App::PropertyLinkList joints;
+    App::PropertyLinkList motions;
+    App::PropertyLinkList actions;
     App::PropertyLink mesh;
     App::PropertyLink solver;
     App::PropertyLinkList results;

@@ -52,9 +52,17 @@ App::DocumentObject* findDirectChildByInternalName(const char* element,
             return child;
         }
     }
-    for (auto* child : part->results.getValues()) {
-        if (child && name == child->getNameInDocument()) {
-            return child;
+    const std::array<const App::PropertyLinkList*, 4> linkedChildLists = {{
+        &part->joints,
+        &part->motions,
+        &part->actions,
+        &part->results,
+    }};
+    for (const auto* list : linkedChildLists) {
+        for (auto* child : list->getValues()) {
+            if (child && name == child->getNameInDocument()) {
+                return child;
+            }
         }
     }
     return nullptr;
@@ -195,6 +203,28 @@ MbDFEM::FEMPart::FEMPart()
                       App::Prop_None,
                       "Multibody part represented by this FEM part");
     mbdItem.setScope(App::LinkScope::Global);
+    ADD_PROPERTY_TYPE(joints,
+                      (nullptr),
+                      "MbDFEM",
+                      App::Prop_None,
+                      "FEM joints belonging to this FEM part");
+    // Joints, motions, and actions are siblings of FEMPart in the FEMAssembly
+    // category folders.  They are relationships, not children owned by this
+    // part, so Child scope would incorrectly report these links as out of
+    // scope whenever the document recomputes.
+    joints.setScope(App::LinkScope::Global);
+    ADD_PROPERTY_TYPE(motions,
+                      (nullptr),
+                      "MbDFEM",
+                      App::Prop_None,
+                      "FEM motions belonging to this FEM part");
+    motions.setScope(App::LinkScope::Global);
+    ADD_PROPERTY_TYPE(actions,
+                      (nullptr),
+                      "MbDFEM",
+                      App::Prop_None,
+                      "FEM actions belonging to this FEM part");
+    actions.setScope(App::LinkScope::Global);
     ADD_PROPERTY_TYPE(mesh,
                       (nullptr),
                       "MbDFEM",
@@ -206,19 +236,26 @@ MbDFEM::FEMPart::FEMPart()
                       "MbDFEM",
                       App::Prop_None,
                       "Calculix solver used for this FEM part");
-    solver.setScope(App::LinkScope::Child);
+    // Group owns the solver; this property is only its typed lookup link.
+    solver.setScope(App::LinkScope::Global);
     ADD_PROPERTY_TYPE(results,
                       (nullptr),
                       "MbDFEM",
                       App::Prop_None,
                       "FEM result objects for this FEM part's solved states");
-    results.setScope(App::LinkScope::Child);
+    // The Results folder owns these objects.  This list is an index used to
+    // preserve state order and can be updated while the FEM result importer
+    // is still moving new objects into that folder.  Treating the index as a
+    // Child link makes those transient updates fail scope validation.
+    results.setScope(App::LinkScope::Global);
     ADD_PROPERTY_TYPE(visual,
                       (nullptr),
                       "MbDFEM",
                       App::Prop_None,
                       "FEM post-processing pipeline for this FEM part");
-    visual.setScope(App::LinkScope::Child);
+    // The pipeline is replaced while results are imported.  Group owns it,
+    // while this lookup link must remain valid during that transition.
+    visual.setScope(App::LinkScope::Global);
     ADD_PROPERTY_TYPE(_resultsFolder,
                       (nullptr),
                       "MbDFEM",

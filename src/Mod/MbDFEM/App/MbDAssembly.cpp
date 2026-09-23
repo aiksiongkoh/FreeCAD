@@ -12,13 +12,15 @@
 #include <Base/Tools.h>
 
 #include "MbDAction.h"
+#include "MbDAnimationParameters.h"
 #include "MbDAssemblyPy.h"
 #include "MbDFolders.h"
+#include "MbDGravity.h"
 #include "MbDGroupUtils.h"
 #include "MbDJoint.h"
 #include "MbDMotion.h"
-#include "MbDParameters.h"
 #include "MbDPart.h"
+#include "MbDSimulationParameters.h"
 
 PROPERTY_SOURCE(MbDFEM::MbDAssembly, App::Part)
 

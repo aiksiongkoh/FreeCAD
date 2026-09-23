@@ -456,9 +456,34 @@ def _diagram_vectors(fem_part, assembly, sample=None):
         nodes = load.get("nodes")
         if nodes is None:
             nodes = FreeCADMbDFEMEmbedded._fem_mesh_nodes(getattr(fem_part, "mesh", None))
+        cloads = load.get("cloads") or []
+        if cloads:
+            nodal_vectors = {}
+            for node_id, dof, value in cloads:
+                local_vector = nodal_vectors.setdefault(int(node_id), App.Vector())
+                if dof == 1:
+                    local_vector.x += value
+                elif dof == 2:
+                    local_vector.y += value
+                elif dof == 3:
+                    local_vector.z += value
+            for node_id in sorted(nodal_vectors):
+                local_vector = nodal_vectors[node_id]
+                if node_id not in nodes or local_vector.Length <= _ZERO_TOLERANCE:
+                    continue
+                vectors.append(
+                    _DiagramVector(
+                        _global_point(placement, nodes[node_id]),
+                        _global_vector(placement, local_vector),
+                    )
+                )
+            continue
+
         x_axis = load["x_axis"]
         for name in ("U1", "U4", "L1", "L4"):
-            for node_id in load["octants"][name]:
+            for node_id in load.get("octants", {}).get(name, []):
+                if name not in load.get("nodal_values", {}):
+                    continue
                 value = FreeCADMbDFEMEmbedded._joint_side_force_node_value(load, name, node_id)
                 local_vector = x_axis * value
                 if local_vector.Length <= _ZERO_TOLERANCE:
@@ -537,8 +562,11 @@ def _matching_cload_frame_metadata(inp_file_name, mesh_signature):
 
 
 def _cload_vectors_from_inp_content(content):
-    marker = FreeCADMbDFEMEmbedded._MBD_JOINT_CYLINDER_LOAD_MARKER.strip()
-    marker_at = content.rfind(marker)
+    markers = [
+        FreeCADMbDFEMEmbedded._MBD_JOINT_CLOAD_MARKER.strip(),
+        FreeCADMbDFEMEmbedded._MBD_LEGACY_JOINT_CYLINDER_LOAD_MARKER.strip(),
+    ]
+    marker_at = max(content.rfind(marker) for marker in markers)
     if marker_at < 0:
         return {}
 
@@ -583,10 +611,16 @@ def _mbd_joint_cylindrical_hole_loads(fem_part, assembly, sample):
 
     loads = []
     placement = _mesh_placement_at_sample(fem_part, sample)
-    for joint, marker, sign in FreeCADMbDFEMEmbedded._part_joints_for_mbd_part(mbd_part, assembly):
+    for joint, _marker, sign in FreeCADMbDFEMEmbedded._part_joints_for_mbd_part(mbd_part, assembly):
         force = placement.Rotation.inverted().multVec(_sample_joint_force(joint, sample) * sign)
-        load = FreeCADMbDFEMEmbedded._joint_cylindrical_hole_load(joint, marker, nodes, force)
-        if load is not None:
+        torque = App.Vector()
+        for load in FreeCADMbDFEMEmbedded._joint_loads_for_fem_part(
+            joint,
+            mbd_part,
+            nodes,
+            force,
+            torque,
+        ):
             load["nodes"] = nodes
             loads.append(load)
     return loads
@@ -645,12 +679,29 @@ def _mbd_joint_cylindrical_face_regions(fem_part, assembly):
         mbd_part,
         assembly,
     ):
-        node_ids = _marker_cylindrical_surface_node_ids(marker, nodes)
-        if node_ids:
+        for face_pair in FreeCADMbDFEMEmbedded._joint_face_pairs(joint):
+            if face_pair.get("type") != "CylCyl":
+                continue
+            side = FreeCADMbDFEMEmbedded._face_pair_side_for_part(face_pair, mbd_part)
+            if side is None:
+                continue
+            reference = FreeCADMbDFEMEmbedded._cylindrical_face_reference(
+                face_pair.get("face{}".format(side))
+            )
+            if reference is None:
+                continue
+            node_ids = FreeCADMbDFEMEmbedded._cylindrical_surface_node_ids(
+                reference,
+                nodes,
+                reference["origin"],
+                reference["axis"],
+            )
+            if not node_ids:
+                continue
             regions.append(
                 {
                     "joint": joint,
-                    "marker": marker,
+                    "face_pair": face_pair,
                     "surface_node_ids": node_ids,
                 }
             )

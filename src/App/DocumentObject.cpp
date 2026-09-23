@@ -105,7 +105,7 @@ void DocumentObject::printInvalidLinks() const
         // Truncate the invalid object list name strings for readability, if they happen to be very
         // long.
         std::vector<App::DocumentObject*> invalid_linkobjs;
-        std::string objnames, scopenames;
+        std::string objnames, scopenames, propnames;
         GeoFeatureGroupExtension::getInvalidLinkObjects(this, invalid_linkobjs);
         for (auto& obj : invalid_linkobjs) {
             objnames += obj->getNameInDocument();
@@ -140,9 +140,28 @@ void DocumentObject::printInvalidLinks() const
             scopenames.pop_back();
         }
 
-        Base::Console().warning("{}: {} links are out of scope. Out of scope links to: {}\n",
+        std::vector<App::Property*> properties;
+        getPropertyList(properties);
+        for (auto* property : properties) {
+            if (GeoFeatureGroupExtension::isLinkValid(property)) {
+                continue;
+            }
+            if (!propnames.empty()) {
+                propnames += " ";
+            }
+            if (const char* name = getPropertyName(property)) {
+                propnames += name;
+            }
+        }
+        if (propnames.empty()) {
+            propnames = "N/A";
+        }
+
+        Base::Console().warning("{}: {} links are out of scope. Invalid properties: {}. "
+                                "Out of scope links to: {}\n",
                                 getTypeId().getName(),
                                 getNameInDocument(),
+                                propnames,
                                 objnames);
     }
     catch (const Base::Exception& e) {

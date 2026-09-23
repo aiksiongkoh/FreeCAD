@@ -15,8 +15,12 @@ generate_from_py(MbDPart)
 set(MbDFEM_SRCS
     ../MbDFEMGlobal.h
     AppMbDFEM.cpp
+    AnulAnulFacePair.cpp
+    AnulAnulFacePair.h
     AsmtIO.cpp
     AsmtIO.h
+    CylCylFacePair.cpp
+    CylCylFacePair.h
     FEMAction.cpp
     FEMAction.h
     FEMAssembly.cpp
@@ -31,6 +35,8 @@ set(MbDFEM_SRCS
     FEMPart.h
     FEMPart.pyi
     FEMPartPyImp.cpp
+    FacePair.cpp
+    FacePair.h
     MbDAction.cpp
     MbDAction.h
     MbDAssembly.cpp
@@ -53,12 +59,18 @@ set(MbDFEM_SRCS
     MbDMarker.h
     MbDMotion.cpp
     MbDMotion.h
-    MbDParameters.cpp
-    MbDParameters.h
+    MbDAnimationParameters.cpp
+    MbDAnimationParameters.h
+    MbDGravity.cpp
+    MbDGravity.h
     MbDPart.cpp
     MbDPart.h
     MbDPart.pyi
     MbDPartPyImp.cpp
+    MbDSimulationParameters.cpp
+    MbDSimulationParameters.h
+    RectRectFacePair.cpp
+    RectRectFacePair.h
 )
 
 add_library(MbDFEM SHARED ${MbDFEM_SRCS})

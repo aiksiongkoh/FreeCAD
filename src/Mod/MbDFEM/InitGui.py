@@ -18,31 +18,8 @@ import FreeCADMbDSimulationPanel
 
 FreeCAD.__unit_test__ += ["TestMbDFEMGui"]
 
-_animation_parameters_selection_observer = None
-_simulation_parameters_selection_observer = None
 _embedded_fem_part_view_provider_observer = None
 _true_mesh_view_states = {}
-
-try:
-    if _animation_parameters_selection_observer is not None:
-        Gui.Selection.removeObserver(_animation_parameters_selection_observer)
-except Exception:
-    pass
-_animation_parameters_selection_observer = (
-    FreeCADMbDAnimationPanel.AnimationParametersSelectionObserver()
-)
-Gui.Selection.addObserver(_animation_parameters_selection_observer)
-
-try:
-    if _simulation_parameters_selection_observer is not None:
-        Gui.Selection.removeObserver(_simulation_parameters_selection_observer)
-except Exception:
-    pass
-_simulation_parameters_selection_observer = (
-    FreeCADMbDSimulationPanel.SimulationParametersSelectionObserver()
-)
-Gui.Selection.addObserver(_simulation_parameters_selection_observer)
-
 
 def _normalize(vector):
     import FreeCAD as App
@@ -1135,6 +1112,52 @@ class CreateFEMAssemblyCommand:
         )
 
     @staticmethod
+    def _marker_mbd_part(marker):
+        if marker is None:
+            return None
+        try:
+            parent = marker.getParentGeoFeatureGroup()
+            if parent is not None and parent.isDerivedFrom("MbDFEM::MbDPart"):
+                return parent
+        except Exception:
+            pass
+        try:
+            linked, _sub_names = marker.Geometry
+            if linked is not None and linked.isDerivedFrom("MbDFEM::MbDPart"):
+                return linked
+        except Exception:
+            pass
+        return None
+
+    @classmethod
+    def _fem_joint_participates_in_mbd_part(cls, fem_joint, mbd_part):
+        mbd_joint = getattr(fem_joint, "mbdItem", None)
+        if mbd_joint is None or mbd_part is None:
+            return False
+
+        for property_name in ("markerI", "markerJ"):
+            marker = getattr(mbd_joint, property_name, None)
+            if cls._marker_mbd_part(marker) is mbd_part:
+                return True
+            try:
+                if marker in mbd_part.markers:
+                    return True
+            except Exception:
+                pass
+
+        return False
+
+    @classmethod
+    def _assign_fem_joints_to_parts(cls, fem_parts, fem_joints):
+        for fem_part in fem_parts:
+            mbd_part = getattr(fem_part, "mbdItem", None)
+            fem_part.joints = [
+                fem_joint
+                for fem_joint in fem_joints
+                if cls._fem_joint_participates_in_mbd_part(fem_joint, mbd_part)
+            ]
+
+    @staticmethod
     def _expand_tree_objects(objects, report=False):
         import FreeCAD as App
         import FreeCADGui as Gui
@@ -1210,8 +1233,9 @@ class CreateFEMAssemblyCommand:
             folders = self._ensure_fem_assembly_folders(fem_assembly)
             for folder in folders:
                 self._remove_from_owner_groups(folder)
-            self._populate_fem_parts(fem_assembly, mbd_assembly, folders[0])
-            self._populate_fem_joints(fem_assembly, mbd_assembly, folders[1])
+            fem_parts = self._populate_fem_parts(fem_assembly, mbd_assembly, folders[0])
+            fem_joints = self._populate_fem_joints(fem_assembly, mbd_assembly, folders[1])
+            self._assign_fem_joints_to_parts(fem_parts, fem_joints)
             import FreeCADMbDFEMEmbedded
 
             FreeCADMbDFEMEmbedded.refresh_view_providers(document)

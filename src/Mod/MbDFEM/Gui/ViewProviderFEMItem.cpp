@@ -55,6 +55,21 @@ std::vector<App::DocumentObject*> ViewProviderFEMItem::claimChildren() const
         if (auto* solver = part->solver.getValue()) {
             children.push_back(solver);
         }
+        for (auto* joint : part->joints.getValues()) {
+            if (joint) {
+                children.push_back(joint);
+            }
+        }
+        for (auto* motion : part->motions.getValues()) {
+            if (motion) {
+                children.push_back(motion);
+            }
+        }
+        for (auto* action : part->actions.getValues()) {
+            if (action) {
+                children.push_back(action);
+            }
+        }
         return children;
     }
 

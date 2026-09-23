@@ -410,39 +410,6 @@ class AnimationTaskPanel:
             self.animation_parameters.loop = bool(checked)
 
 
-class AnimationParametersSelectionObserver:
-    """Open the animation Task panel when an AnimationParameters object is selected."""
-
-    def addSelection(self, document_name, object_name, sub_name, mouse_position):
-        obj = self._selected_object(document_name, object_name, sub_name)
-        if not is_animation_parameters(obj):
-            return
-        show_animation_task_panel(obj)
-
-    @staticmethod
-    def _selected_object(document_name, object_name, sub_name=""):
-        document = App.getDocument(document_name)
-        root = document.getObject(object_name) if document is not None else None
-        if root is None:
-            return None
-        if is_animation_parameters(root):
-            return root
-
-        if sub_name:
-            try:
-                resolved = root.getSubObject(sub_name)
-                if is_animation_parameters(resolved):
-                    return resolved
-            except Exception:
-                pass
-
-            object_from_subname = document.getObject(sub_name.rstrip(".").rsplit(".", 1)[-1])
-            if is_animation_parameters(object_from_subname):
-                return object_from_subname
-
-        return root
-
-
 def show_animation_task_panel(animation_parameters):
     active = Gui.Control.activeDialog()
     if isinstance(active, AnimationTaskPanel):
