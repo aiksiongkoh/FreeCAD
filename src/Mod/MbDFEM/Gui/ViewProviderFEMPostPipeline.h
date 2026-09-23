@@ -16,10 +16,12 @@ class MbDFEMGuiExport ViewProviderFEMPostPipeline: public FemGui::ViewProviderFe
 
 public:
     ViewProviderFEMPostPipeline();
+    ~ViewProviderFEMPostPipeline() override;
     App::PropertyBool ShowColorContour;
     App::PropertyBool ShowLegend;
 
     bool allowOverride(const App::DocumentObject&) const override;
+    void attach(App::DocumentObject* object) override;
     void onChanged(const App::Property* prop) override;
     void updateData(const App::Property* prop) override;
     void setDisplayMode(const char* mode) override;
@@ -33,6 +35,7 @@ private:
     void applyDisplayOptions();
     SoNodeSensor materialSensor;
     SoNodeSensor legendSensor;
+    SoSwitch* legendSwitch;
 };
 
 }  // namespace MbDFEMGui
