@@ -288,39 +288,6 @@ class SimulationTaskPanel:
         return response == QtGui.QMessageBox.Ok
 
 
-class SimulationParametersSelectionObserver:
-    """Open the simulation Task panel when a SimulationParameters object is selected."""
-
-    def addSelection(self, document_name, object_name, sub_name, mouse_position):
-        obj = self._selected_object(document_name, object_name, sub_name)
-        if not is_simulation_parameters(obj):
-            return
-        show_simulation_task_panel(obj)
-
-    @staticmethod
-    def _selected_object(document_name, object_name, sub_name=""):
-        document = App.getDocument(document_name)
-        root = document.getObject(object_name) if document is not None else None
-        if root is None:
-            return None
-        if is_simulation_parameters(root):
-            return root
-
-        if sub_name:
-            try:
-                resolved = root.getSubObject(sub_name)
-                if is_simulation_parameters(resolved):
-                    return resolved
-            except Exception:
-                pass
-
-            object_from_subname = document.getObject(sub_name.rstrip(".").rsplit(".", 1)[-1])
-            if is_simulation_parameters(object_from_subname):
-                return object_from_subname
-
-        return root
-
-
 def show_assembly_task_panel(assembly):
     return _show_task_panel(assembly)
 

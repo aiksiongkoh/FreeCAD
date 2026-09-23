@@ -4,24 +4,31 @@
 #include <Base/Exception.h>
 #include <Base/Interpreter.h>
 #include <Base/PyObjectBase.h>
+#include <Base/VectorPy.h>
 #include <App/DocumentObjectPy.h>
 
 #include "AsmtIO.h"
+#include "AnulAnulFacePair.h"
+#include "CylCylFacePair.h"
 #include "FEMAction.h"
 #include "FEMAssembly.h"
 #include "FEMItem.h"
 #include "FEMJoint.h"
 #include "FEMPart.h"
+#include "FacePair.h"
 #include "MbDAction.h"
+#include "MbDAnimationParameters.h"
 #include "MbDAssembly.h"
 #include "MbDFolders.h"
+#include "MbDGravity.h"
 #include "MbDItemIJ.h"
 #include "MbDJoint.h"
 #include "MbDMassMarker.h"
 #include "MbDMarker.h"
 #include "MbDMotion.h"
-#include "MbDParameters.h"
 #include "MbDPart.h"
+#include "MbDSimulationParameters.h"
+#include "RectRectFacePair.h"
 
 namespace MbDFEM
 {
@@ -38,6 +45,11 @@ public:
         add_varargs_method("importSolvedAsmt",
                            &Module::importSolvedAsmt,
                            "importSolvedAsmt(assembly, filename) -- Import solved ASMT result series.");
+        add_varargs_method(
+            "cylCylHoleCLOADs",
+            &Module::cylCylHoleCLOADs,
+            "cylCylHoleCLOADs(facePair, nodes, center, axis, radius, axialMin, axialMax, force)"
+            " -- Compute cylindrical-hole CalculiX CLOAD records.");
         initialize("The MbDFEM module.");
     }
 
@@ -108,6 +120,69 @@ private:
         }
         return result;
     }
+
+    Py::Object cylCylHoleCLOADs(const Py::Tuple& args)
+    {
+        PyObject* pairObject {};
+        PyObject* nodesObject {};
+        PyObject* centerObject {};
+        PyObject* axisObject {};
+        PyObject* forceObject {};
+        double radius {};
+        double axialMin {};
+        double axialMax {};
+        if (!PyArg_ParseTuple(args.ptr(),
+                              "O!O!O!O!dddO!",
+                              &App::DocumentObjectPy::Type,
+                              &pairObject,
+                              &PyList_Type,
+                              &nodesObject,
+                              &Base::VectorPy::Type,
+                              &centerObject,
+                              &Base::VectorPy::Type,
+                              &axisObject,
+                              &radius,
+                              &axialMin,
+                              &axialMax,
+                              &Base::VectorPy::Type,
+                              &forceObject)) {
+            throw Py::Exception();
+        }
+
+        auto* documentObject =
+            static_cast<App::DocumentObjectPy*>(pairObject)->getDocumentObjectPtr();
+        auto* facePair = freecad_cast<MbDFEM::CylCylFacePair*>(documentObject);
+        if (!facePair) {
+            throw Py::TypeError("cylCylHoleCLOADs expects an MbDFEM::CylCylFacePair");
+        }
+
+        std::vector<MbDFEM::CylCylFacePair::HoleNode> nodes;
+        const Py_ssize_t nodeCount = PyList_Size(nodesObject);
+        nodes.reserve(static_cast<std::size_t>(nodeCount));
+        for (Py_ssize_t index = 0; index < nodeCount; ++index) {
+            PyObject* item = PyList_GetItem(nodesObject, index);
+            int nodeId {};
+            PyObject* positionObject {};
+            if (!PyArg_ParseTuple(
+                    item, "iO!", &nodeId, &Base::VectorPy::Type, &positionObject)) {
+                throw Py::TypeError("nodes must contain (nodeId, FreeCAD.Vector) tuples");
+            }
+            nodes.push_back(
+                {nodeId, static_cast<Base::VectorPy*>(positionObject)->value()});
+        }
+
+        const Base::Vector3d center = static_cast<Base::VectorPy*>(centerObject)->value();
+        const Base::Vector3d axis = static_cast<Base::VectorPy*>(axisObject)->value();
+        const Base::Vector3d force = static_cast<Base::VectorPy*>(forceObject)->value();
+        const auto cloads = facePair->holeCLOADs(
+            nodes, center, axis, radius, axialMin, axialMax, force);
+
+        Py::List result;
+        for (const auto& cload : cloads) {
+            result.append(Py::asObject(Py_BuildValue("(iid)", cload.nodeId, cload.dof, cload.value)));
+        }
+        return result;
+    }
 };
 
 PyObject* initModule()
@@ -130,6 +205,10 @@ PyMOD_INIT_FUNC(MbDFEM)
 
     PyObject* module = MbDFEM::initModule();
     MbDFEM::FEMItem::init();
+    MbDFEM::FacePair::init();
+    MbDFEM::CylCylFacePair::init();
+    MbDFEM::AnulAnulFacePair::init();
+    MbDFEM::RectRectFacePair::init();
     MbDFEM::FEMAction::init();
     MbDFEM::FEMAssembly::init();
     MbDFEM::FEMJoint::init();

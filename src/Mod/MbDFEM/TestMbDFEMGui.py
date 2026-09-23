@@ -181,13 +181,15 @@ class MbDFEMGuiViewProviderTest(unittest.TestCase):
             App.Vector(100, 0, 0),
             App.Rotation(App.Vector(0, 0, 1), 30),
         )
-        fixed_part.ensureMassMarker()
+        fixed_marker = fixed_part.ensureMassMarker()
         moving_part.Shape = Part.makeBox(4, 5, 6)
         moving_part.Placement = App.Placement(
             App.Vector(0, 200, 0),
             App.Rotation(App.Vector(1, 0, 0), 20),
         )
-        moving_part.ensureMassMarker()
+        moving_marker = moving_part.ensureMassMarker()
+        joint.markerI = fixed_marker
+        joint.markerJ = moving_marker
         assembly.addAssembly(subassembly)
         assembly.addFixedPart(fixed_part)
         assembly.addPart(moving_part)
@@ -299,7 +301,7 @@ class MbDFEMGuiViewProviderTest(unittest.TestCase):
             fem_part.Origin.ViewObject.ShowInTree = True
             self.assertEqual(
                 fem_part.ViewObject.claimChildren(),
-                [material, fem_part.mesh, fem_part.solver],
+                [material, fem_part.mesh, fem_part.solver, *fem_part.joints],
             )
             self.assertFalse(fem_part.Origin.ViewObject.ShowInTree)
             fem_part.Origin.ViewObject.ShowInTree = True
@@ -354,6 +356,8 @@ class MbDFEMGuiViewProviderTest(unittest.TestCase):
         self.assertEqual([fem_joint.TypeId for fem_joint in fem_joints], ["MbDFEM::FEMJoint"])
         self.assertEqual([fem_joint.mbdItem for fem_joint in fem_joints], [joint])
         self.assertEqual(fem_assembly.joints, fem_joints)
+        for fem_part in fem_parts:
+            self.assertEqual(fem_part.joints, fem_joints)
         self.assertEqual(fem_assembly.ViewObject.claimChildren3D(), [*fem_parts, *fem_joints])
         for fem_item in [*fem_parts, *fem_joints]:
             self.assertIn(fem_item, fem_assembly.Group)
@@ -1324,7 +1328,7 @@ class MbDFEMGuiViewProviderTest(unittest.TestCase):
         finally:
             reopened.reject()
 
-    def test_animation_parameters_selection_opens_task_panel(self):
+    def test_animation_parameters_open_task_panel_only_on_double_click(self):
         import FreeCADMbDAnimationPanel
 
         assembly = self.document.addObject("MbDFEM::MbDAssembly", "Assembly")
@@ -1341,27 +1345,16 @@ class MbDFEMGuiViewProviderTest(unittest.TestCase):
             assembly,
         )
 
+        self.Gui.Selection.addSelection(animation_parameters)
+        self.Gui.updateGui()
+        self.assertIsNone(self.Gui.Control.activeDialog())
+
         self.assertTrue(animation_parameters.ViewObject.doubleClicked())
         dialog = self.Gui.Control.activeDialog()
-
         try:
             self.assertIsInstance(dialog, FreeCADMbDAnimationPanel.AnimationTaskPanel)
             self.assertIs(dialog.animation_parameters, animation_parameters)
             self.assertIs(dialog.assembly, assembly)
-        finally:
-            if dialog is not None:
-                self.Gui.Control.closeDialog()
-
-        observer = FreeCADMbDAnimationPanel.AnimationParametersSelectionObserver()
-        observer.addSelection(
-            self.document.Name,
-            assembly.Name,
-            f"{animation_parameters.Name}.",
-            None,
-        )
-        dialog = self.Gui.Control.activeDialog()
-        try:
-            self.assertIsInstance(dialog, FreeCADMbDAnimationPanel.AnimationTaskPanel)
         finally:
             if dialog is not None:
                 self.Gui.Control.closeDialog()
@@ -1457,7 +1450,7 @@ class MbDFEMGuiViewProviderTest(unittest.TestCase):
         finally:
             panel.reject()
 
-    def test_simulation_parameters_selection_opens_task_panel(self):
+    def test_simulation_parameters_open_task_panel_only_on_double_click(self):
         import FreeCADMbDSimulationPanel
 
         assembly = self.document.addObject("MbDFEM::MbDAssembly", "Assembly")
@@ -1474,9 +1467,12 @@ class MbDFEMGuiViewProviderTest(unittest.TestCase):
             assembly,
         )
 
+        self.Gui.Selection.addSelection(simulation_parameters)
+        self.Gui.updateGui()
+        self.assertIsNone(self.Gui.Control.activeDialog())
+
         self.assertTrue(simulation_parameters.ViewObject.doubleClicked())
         dialog = self.Gui.Control.activeDialog()
-
         try:
             self.assertIsInstance(dialog, FreeCADMbDSimulationPanel.SimulationTaskPanel)
             self.assertIs(dialog.parameters, simulation_parameters)
@@ -1499,20 +1495,6 @@ class MbDFEMGuiViewProviderTest(unittest.TestCase):
         try:
             self.assertIsInstance(dialog, FreeCADMbDMassMarkerPanel.MassMarkerTaskPanel)
             self.assertIs(dialog.marker, mass_marker)
-        finally:
-            if dialog is not None:
-                self.Gui.Control.closeDialog()
-
-        observer = FreeCADMbDSimulationPanel.SimulationParametersSelectionObserver()
-        observer.addSelection(
-            self.document.Name,
-            assembly.Name,
-            f"{simulation_parameters.Name}.",
-            None,
-        )
-        dialog = self.Gui.Control.activeDialog()
-        try:
-            self.assertIsInstance(dialog, FreeCADMbDSimulationPanel.SimulationTaskPanel)
         finally:
             if dialog is not None:
                 self.Gui.Control.closeDialog()
