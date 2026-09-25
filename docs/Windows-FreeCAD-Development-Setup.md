@@ -39,7 +39,7 @@ C:\Users\<WindowsUser>\Documents\GitHub\aiksiongkoh\FreeCAD\feature-mbdfem
 The Debug LibPack is outside the source checkout:
 
 ```text
-C:\Users\<WindowsUser>\Documents\GitHub\FreeCAD\FreeCAD-LibPack\LibPack-26.3.0-v3.5.2-x64-Debug
+C:\Users\<WindowsUser>\Documents\GitHub\FreeCAD\FreeCAD-LibPack\LibPack-26.3.0-v3.5.5-x64-Debug
 ```
 
 Keeping the LibPack outside the Git checkout avoids accidental commits of
@@ -105,7 +105,7 @@ If CMake reports Python development components missing from the Debug LibPack,
 verify the LibPack first:
 
 ```powershell
-$LibPack = "$HOME\Documents\GitHub\FreeCAD\FreeCAD-LibPack\LibPack-26.3.0-v3.5.2-x64-Debug"
+$LibPack = "$HOME\Documents\GitHub\FreeCAD\FreeCAD-LibPack\LibPack-26.3.0-v3.5.5-x64-Debug"
 Test-Path "$LibPack\bin\python.exe"
 Test-Path "$LibPack\bin\Include\Python.h"
 Test-Path "$LibPack\bin\libs"

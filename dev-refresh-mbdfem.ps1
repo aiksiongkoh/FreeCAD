@@ -23,7 +23,7 @@ function Invoke-CheckedNativeCommand {
 }
 
 if ($BuildCpp) {
-    Invoke-CheckedNativeCommand cmake --build build\debug --target MbDFEM MbDFEMGui
+    Invoke-CheckedNativeCommand cmake --build build\debug --config Debug --parallel 8
 }
 
 Invoke-CheckedNativeCommand cmake --build build\debug --target MbDFEMScripts

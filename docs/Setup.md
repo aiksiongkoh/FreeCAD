@@ -24,7 +24,7 @@ C:\Users\<WindowsUser>\Documents\GitHub\aiksiongkoh\FreeCAD\feature-mbdfem
 The expected Debug LibPack location is:
 
 ```text
-C:\Users\<WindowsUser>\Documents\GitHub\FreeCAD\FreeCAD-LibPack\LibPack-26.3.0-v3.5.2-x64-Debug
+C:\Users\<WindowsUser>\Documents\GitHub\FreeCAD\FreeCAD-LibPack\LibPack-26.3.0-v3.5.5-x64-Debug
 ```
 
 ## 1. Install Required Software
@@ -143,7 +143,7 @@ submodule command.
 Download the Debug LibPack that matches this workspace:
 
 ```text
-LibPack-26.3.0-v3.5.2-x64-Debug
+LibPack-26.3.0-v3.5.5-x64-Debug
 ```
 
 Place and extract it under:
@@ -155,7 +155,7 @@ C:\Users\<WindowsUser>\Documents\GitHub\FreeCAD\FreeCAD-LibPack
 After extraction, verify:
 
 ```powershell
-$LibPack = "$HOME\Documents\GitHub\FreeCAD\FreeCAD-LibPack\LibPack-26.3.0-v3.5.2-x64-Debug"
+$LibPack = "$HOME\Documents\GitHub\FreeCAD\FreeCAD-LibPack\LibPack-26.3.0-v3.5.5-x64-Debug"
 
 Test-Path "$LibPack\bin"
 Test-Path "$LibPack\bin\python.exe"
@@ -202,7 +202,7 @@ build/debug
 It currently points to this LibPack path:
 
 ```text
-C:/Users/askoh/Documents/GitHub/FreeCAD/FreeCAD-LibPack/LibPack-26.3.0-v3.5.2-x64-Debug
+C:/Users/askoh/Documents/GitHub/FreeCAD/FreeCAD-LibPack/LibPack-26.3.0-v3.5.5-x64-Debug
 ```
 
 On a different Windows account, either place the LibPack at the equivalent path
