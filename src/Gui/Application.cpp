@@ -514,6 +514,7 @@ void Application::initStyleParameterManager()
 
 // clang-format off
 Application::Application(bool GUIenabled)
+    : pNavlibInterface(nullptr)
 {
     // App::GetApplication().Attach(this);
     if (GUIenabled) {
