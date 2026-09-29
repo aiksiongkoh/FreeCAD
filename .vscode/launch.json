@@ -2,6 +2,14 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "name": "Debug MbDFEM",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/mbdfem-debug/bin/FreeCAD_d.exe",
+            "cwd": "${workspaceFolder}/build/mbdfem-debug/bin",
+            "stopAtEntry": false
+        },
+        {
             "name": "Fast Debug FreeCAD",
             "type": "cppvsdbg",
             "request": "launch",

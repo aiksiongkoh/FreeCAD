@@ -199,7 +199,7 @@ std::vector<App::DocumentObject*> partObjectsFromFolder(App::DocumentObjectGroup
 
     std::vector<App::DocumentObject*> parts;
     for (auto* object : folder->Group.getValues()) {
-        if (object && object->isDerivedFrom<MbDFEM::MbDPart>()) {
+        if (object && !object->isRemoving() && object->isDerivedFrom<MbDFEM::MbDPart>()) {
             parts.push_back(object);
         }
     }
@@ -210,7 +210,7 @@ std::vector<App::DocumentObject*> partObjectsFromProperty(const App::PropertyLin
 {
     std::vector<App::DocumentObject*> parts;
     for (auto* object : property.getValues()) {
-        if (object && object->isDerivedFrom<MbDFEM::MbDPart>()) {
+        if (object && !object->isRemoving() && object->isDerivedFrom<MbDFEM::MbDPart>()) {
             parts.push_back(object);
         }
     }
@@ -622,7 +622,11 @@ void MbDFEM::MbDAssembly::removeFromCategories(App::DocumentObject* child)
     }
 
     for (const auto& category : assemblyCategories) {
-        removeAll(this->*(category.children), child);
+        auto& children = this->*(category.children);
+        // Clear both representations before a property change can restore the child.
+        Base::ObjectStatusLocker<App::Property::Status, App::Property> guard(
+            App::Property::User3, &children);
+        removeAll(children, child);
         if (auto* folder = getFolder(this, category)) {
             if (folder->hasObject(child)) {
                 folder->removeObject(child);
@@ -636,6 +640,8 @@ void MbDFEM::MbDAssembly::synchronizePartCategories()
     auto* partsFolder = getPartsFolder();
     auto* fixedPartsFolder = getFixedPartsFolder();
 
+    // Link cleanup updates the lists and folders separately. Never restore a part
+    // that the document is removing from a list that has not been cleared yet.
     auto fixedValues = partObjectsFromFolder(fixedPartsFolder);
     if (fixedValues.empty() && !fixedparts.getValues().empty()) {
         fixedValues = partObjectsFromProperty(fixedparts);

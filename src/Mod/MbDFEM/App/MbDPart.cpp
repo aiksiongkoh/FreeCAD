@@ -395,7 +395,8 @@ bool MbDFEM::MbDPart::normalizeShapeToOneSolid()
 
     _normalizingShape = true;
     try {
-        Shape.setValue(fused);
+        // Boolean fusion can return a compound containing the single validated solid.
+        Shape.setValue(solidShapes(fused).front());
     }
     catch (...) {
         _normalizingShape = false;

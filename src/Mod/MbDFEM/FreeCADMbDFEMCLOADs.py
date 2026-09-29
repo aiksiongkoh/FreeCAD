@@ -518,11 +518,6 @@ def _diagram_vectors(fem_part, assembly, sample=None):
 
 
 def _diagram_vectors_from_matching_inp(fem_part, sample, placement):
-    mesh_object = getattr(fem_part, "mesh", None)
-    nodes = FreeCADMbDFEMEmbedded._fem_mesh_nodes(mesh_object) if mesh_object is not None else {}
-    if not nodes:
-        return None
-
     inp_file_name = _sample_inp_file_name(fem_part, sample)
     if not inp_file_name:
         return None
@@ -531,6 +526,11 @@ def _diagram_vectors_from_matching_inp(fem_part, sample, placement):
         with open(inp_file_name, "r", encoding="utf-8") as inp_file:
             content = inp_file.read()
     except OSError:
+        return None
+
+    mesh_object = getattr(fem_part, "mesh", None)
+    nodes = FreeCADMbDFEMEmbedded._fem_mesh_nodes(mesh_object) if mesh_object is not None else {}
+    if not nodes:
         return None
 
     mesh_signature = FreeCADMbDFEMEmbedded._fem_mesh_signature(mesh_object, nodes)

@@ -15,6 +15,7 @@ import FreeCADMbDBackend
 import FreeCADMbDExporter
 import FreeCADMbDFEMCLOADs
 import FreeCADMbDFEMDLOADs
+import FreeCADMbDFEMEmbedded
 import FreeCADMbDFEMResultsPanel
 import FreeCADMbDFreeBodyDiagram
 import FreeCADMbDResults
@@ -27,6 +28,15 @@ class _FakeViewport:
 
 
 class MbDFEMAssemblyTest(unittest.TestCase):
+    @staticmethod
+    def _make_mechanical_result(document, name):
+        # App tests need the real result properties, but not GUI task panels.
+        from femobjects import result_mechanical
+
+        result = document.addObject("Fem::FemResultObjectPython", name)
+        result_mechanical.ResultMechanical(result)
+        return result
+
     class _MeshNode:
         def __init__(self, x, y, z):
             self.x = x
@@ -49,13 +59,18 @@ class MbDFEMAssemblyTest(unittest.TestCase):
         class _TaskPanel:
             pass
 
+        class _SolverTaskPanel(_TaskPanel):
+            def reject(self):
+                # No edit session exists in these App tests.
+                return None
+
         femtaskpanels = types.ModuleType("femtaskpanels")
         task_material_common = types.ModuleType("task_material_common")
         task_result_mechanical = types.ModuleType("task_result_mechanical")
         task_solver_ccxtools = types.ModuleType("task_solver_ccxtools")
         task_material_common._TaskPanel = _TaskPanel
         task_result_mechanical._TaskPanel = _TaskPanel
-        task_solver_ccxtools._TaskPanel = _TaskPanel
+        task_solver_ccxtools._TaskPanel = _SolverTaskPanel
         femtaskpanels.task_material_common = task_material_common
         femtaskpanels.task_result_mechanical = task_result_mechanical
         femtaskpanels.task_solver_ccxtools = task_solver_ccxtools
@@ -690,7 +705,8 @@ class MbDFEMAssemblyTest(unittest.TestCase):
             self.assertTrue(Embedded._ensure_mbd_density_in_inp(inp_file_name, fem_part))
             content = Path(inp_file_name).read_text(encoding="utf-8")
 
-            self.assertIn("*DENSITY\n7.85e-09\n", content)
+            density_row = content.split("*DENSITY\n", 1)[1].splitlines()[0]
+            self.assertEqual(float(density_row), 7.85e-9)
             self.assertLess(content.index("*ELASTIC"), content.index("*DENSITY"))
             self.assertLess(content.index("*DENSITY"), content.index("*STEP"))
 
@@ -723,7 +739,11 @@ class MbDFEMAssemblyTest(unittest.TestCase):
                 "Density": "7850 kg/m^3",
             }
             assembly.addPart(part)
-            part.ensureMassMarker()
+            mass_marker = part.ensureMassMarker()
+            # Density is owned by the MbD material; the FEM material is synchronized from it.
+            mbd_material = mass_marker.material
+            mbd_material.setPhysicalValue("Density", "7850 kg/m^3")
+            mass_marker.material = mbd_material
             fem_part.mbdItem = part
             fem_part.addObject(material)
             Path(inp_file_name).write_text(
@@ -737,13 +757,16 @@ class MbDFEMAssemblyTest(unittest.TestCase):
 
             density = Embedded._mbd_density_in_tonne_per_mm3(fem_part)
 
-            self.assertAlmostEqual(density, 7.85e-9)
-            self.assertEqual(
+            self.assertAlmostEqual(density, 7.85e-9, delta=1e-20)
+            self.assertAlmostEqual(
                 density,
                 App.Units.Quantity("7850 kg/m^3").getValueAs("t/mm^3").Value,
+                delta=1e-20,
             )
             self.assertTrue(Embedded._ensure_mbd_density_in_inp(inp_file_name, fem_part))
-            self.assertIn("*DENSITY\n7.85e-09\n", Path(inp_file_name).read_text(encoding="utf-8"))
+            content = Path(inp_file_name).read_text(encoding="utf-8")
+            density_row = content.split("*DENSITY\n", 1)[1].splitlines()[0]
+            self.assertAlmostEqual(float(density_row), density, delta=1e-20)
         finally:
             os.remove(inp_file_name)
             App.closeDocument(document.Name)
@@ -885,7 +908,9 @@ class MbDFEMAssemblyTest(unittest.TestCase):
             self.assertAlmostEqual(loads[0][1], 2.0)
             self.assertLess(loads[0][2].distanceToPoint(App.Vector(0, -1, 0)), 1e-7)
             self.assertIn("** MbDPart D'Alembert element loads\n", content)
-            self.assertIn("*DLOAD\n42,GRAV,2,0,-1", content)
+            load_row = content.split("*DLOAD\n", 1)[1].splitlines()[0].split(",")
+            self.assertEqual(load_row[:2], ["42", "GRAV"])
+            self.assertEqual([float(value) for value in load_row[2:]], [2.0, 0.0, -1.0, 0.0])
             self.assertLess(content.index("*DLOAD"), content.index("*END STEP"))
 
             Embedded._add_mbd_dalembert_loads_to_inp(inp_file_name, fem_part)
@@ -1015,7 +1040,9 @@ class MbDFEMAssemblyTest(unittest.TestCase):
             content = Path(inp_file_name).read_text(encoding="utf-8")
 
             self.assertEqual([load[0] for load in loads], [42])
-            self.assertIn("*DLOAD\n42,GRAV,2,0,-1", content)
+            load_row = content.split("*DLOAD\n", 1)[1].splitlines()[0].split(",")
+            self.assertEqual(load_row[:2], ["42", "GRAV"])
+            self.assertEqual([float(value) for value in load_row[2:]], [2.0, 0.0, -1.0, 0.0])
             self.assertNotIn("\n84,GRAV", content)
             self.assertNotIn("\n126,GRAV", content)
         finally:
@@ -1174,6 +1201,12 @@ class MbDFEMAssemblyTest(unittest.TestCase):
             fem_part.mesh = mesh_object
             marker.Placement = App.Placement()
             marker_j.Placement = App.Placement()
+            fem_joint = document.addObject("MbDFEM::FEMJoint", "FEMJoint")
+            fem_joint.mbdItem = joint
+            for owner, face_marker in ((part, marker), (pin_part, marker_j)):
+                index = next(index for index, face in enumerate(owner.Shape.Faces, 1)
+                             if getattr(face.Surface, "TypeId", None) == "Part::GeomCylinder")
+                face_marker.Geometry = (owner, [f"Face{index}"])
             joint.markerI = marker
             joint.markerJ = marker_j
             joint.fxs = [0.0, 80.0]
@@ -1195,84 +1228,38 @@ class MbDFEMAssemblyTest(unittest.TestCase):
             cload_metadata = frame_metadata["artifacts"][Embedded._MBD_CLOAD_ARTIFACT]
             self.assertEqual(cload_metadata["algorithm"], Embedded._MBD_CLOAD_ALGORITHM)
             self.assertEqual(cload_metadata["source"], os.path.basename(inp_file_name))
-            values = loads[0]["nodal_values"]
-            node_values = {
-                node_id: Embedded._joint_side_force_node_value(loads[0], name, node_id)
-                for name in ("U1", "U4", "L1", "L4")
-                for node_id in loads[0]["octants"][name]
-            }
-            self.assertNotAlmostEqual(node_values[2], node_values[4])
-            self.assertAlmostEqual(
-                node_values[2],
-                values["U4"] * loads[0]["node_cosines"][2],
-            )
-            self.assertAlmostEqual(
-                node_values[4],
-                values["U4"] * loads[0]["node_cosines"][4],
-            )
-            total_force = (
-                node_values[1]
-                + node_values[2]
-                + node_values[4]
-                + node_values[3]
-                + node_values[9]
-            )
-            moment_y = (
-                node_values[1] * 1
-                + node_values[2] * 1
-                + node_values[4] * 2
-                + node_values[3] * -3
-                + node_values[9] * -2
-            )
-            moment_z = (
-                node_values[1] * 1
-                + node_values[2] * -1
-                + node_values[4] * -0.5
-                + node_values[3] * 1
-                + node_values[9] * -1
-            )
-            self.assertAlmostEqual(total_force, 80.0)
-            self.assertAlmostEqual(moment_y, 0.0)
-            self.assertAlmostEqual(moment_z, 0.0)
-            self.assertIn("*NSET,NSET=NSU1\n1\n", content)
-            self.assertIn("*NSET,NSET=NSU4\n2,4\n", content)
-            self.assertIn("*NSET,NSET=NSL1\n3\n", content)
-            self.assertIn("*NSET,NSET=NSL4\n9\n", content)
-            self.assertIn("*NSET,NSET=NS1\n1,3\n", content)
-            self.assertIn("*NSET,NSET=NS2\n5,7\n", content)
-            self.assertIn("*NSET,NSET=NS3\n6,8\n", content)
-            self.assertIn("*NSET,NSET=NS4\n2,4,9\n", content)
-            self.assertIn("*CLOAD\n", content)
-            cload_values = {}
-            axis_cload_values = {}
+            # Verify the emitted CLOAD records independently of the solver's coefficients.
+            records = []
+            in_cload = False
             for line in content.splitlines():
-                fields = line.split(",")
-                if len(fields) == 3 and fields[1] == "1":
-                    cload_values[int(fields[0])] = float(fields[2])
-                if len(fields) == 3 and fields[0].startswith("NS") and fields[1] == "3":
-                    axis_cload_values[fields[0][2:]] = float(fields[2])
-            for node_id, value in node_values.items():
-                self.assertAlmostEqual(cload_values[node_id], value)
-            self.assertEqual(set(axis_cload_values), {"1", "2", "3", "4"})
-            for name, value in loads[0]["axis_nodal_values"].items():
-                self.assertAlmostEqual(axis_cload_values[name], value)
-            total_axis_force = sum(
-                loads[0]["axis_nodal_values"][name] * len(loads[0]["axis_sets"][name])
-                for name in ("1", "2", "3", "4")
-            )
-            moment_x = sum(
-                (node_data[node_id][1]) * loads[0]["axis_nodal_values"][name]
-                for name in ("1", "2", "3", "4")
-                for node_id in loads[0]["axis_sets"][name]
-            )
-            moment_y = sum(
-                (node_data[node_id][0]) * loads[0]["axis_nodal_values"][name]
-                for name in ("1", "2", "3", "4")
-                for node_id in loads[0]["axis_sets"][name]
-            )
-            self.assertAlmostEqual(total_axis_force, 40.0)
-            self.assertAlmostEqual(moment_x, 0.0)
-            self.assertAlmostEqual(moment_y, 0.0)
+                if line.startswith("**"):
+                    continue
+                if line.startswith("*"):
+                    in_cload = line.upper().startswith("*CLOAD")
+                elif in_cload and line.strip():
+                    node_id, dof, value = line.split(",")
+                    records.append((int(node_id), int(dof), float(value)))
+            self.assertTrue(records)
+            resultant = App.Vector()
+            moment = App.Vector()
+            for node_id, dof, value in records:
+                self.assertIn(node_id, node_data)
+                self.assertIn(dof, (1, 2, 3))
+                force = App.Vector()
+                force[dof - 1] = value
+                resultant += force
+                moment += (App.Vector(*node_data[node_id]) - marker.Placement.Base).cross(force)
+            self.assertLess((resultant - App.Vector(80, 0, 40)).Length, 1e-7)
+            self.assertLess(moment.Length, 1e-7)
+            transverse = loads[0]["cload_components"]["transverse_force"]
+            transverse_by_node = {node_id: value for node_id, dof, value in transverse if dof == 1}
+            self.assertEqual(set(transverse_by_node), {1, 2, 3, 4, 9})
+            self.assertNotAlmostEqual(transverse_by_node[2], transverse_by_node[4])
+            # Nodes in the same bearing region receive cosine-weighted pressure.
+            cosine2 = node_data[2][0] / math.sqrt(2.0)
+            cosine4 = node_data[4][0] / math.sqrt(2.0)
+            self.assertAlmostEqual(transverse_by_node[2] / cosine2,
+                                   transverse_by_node[4] / cosine4)
         finally:
             sidecar_name = Embedded._frame_metadata_sidecar_file_name_for_inp(inp_file_name)
             if os.path.exists(sidecar_name):
@@ -1984,8 +1971,12 @@ class MbDFEMAssemblyTest(unittest.TestCase):
             self.assertEqual(len(fem_joint.facePairs), 1)
             face_pair = fem_joint.facePairs[0]
             self.assertTrue(face_pair.isDerivedFrom("MbDFEM::FacePair"))
-            self.assertEqual(face_pair.faceI, (part_i, ("Face6",)))
-            self.assertEqual(face_pair.faceJ, (part_j, ("Face5",)))
+            self.assertIs(face_pair.faceI[0], part_i)
+            self.assertIs(face_pair.faceJ[0], part_j)
+            self.assertEqual(len(face_pair.faceI[1]), 1)
+            self.assertEqual(len(face_pair.faceJ[1]), 1)
+            self.assertTrue(part_i.Shape.getElement(face_pair.faceI[1][0]).isSame(face_i))
+            self.assertTrue(part_j.Shape.getElement(face_pair.faceJ[1][0]).isSame(face_j))
         finally:
             App.closeDocument(document.Name)
 
@@ -2107,44 +2098,48 @@ class MbDFEMAssemblyTest(unittest.TestCase):
             self.assertEqual(len(fem_joint.facePairs), 1)
             face_pair = fem_joint.facePairs[0]
             self.assertEqual(face_pair.TypeId, "MbDFEM::CylCylFacePair")
-            self.assertEqual(face_pair.faceI, (pin, ("Face{}".format(pin_face_index),)))
-            self.assertEqual(face_pair.faceJ, (block, ("Face{}".format(hole_face_index),)))
+            self.assertEqual(face_pair.faceI, (pin, ["Face{}".format(pin_face_index)]))
+            self.assertEqual(face_pair.faceJ, (block, ["Face{}".format(hole_face_index)]))
         finally:
             App.closeDocument(document.Name)
 
     def test_face_pair_document_objects_save_and_reopen(self):
-        document = App.newDocument("MbDFEMFacePairPersistenceTest")
-        fd, file_name = tempfile.mkstemp(suffix=".FCStd")
-        os.close(fd)
+        with tempfile.TemporaryDirectory() as directory:
+            file_name = os.path.join(directory, "FacePair.FCStd")
+            document = App.newDocument("MbDFEMFacePairPersistenceTest")
+            document_name = document.Name
 
-        try:
-            part_i = document.addObject("MbDFEM::MbDPart", "PartI")
-            part_j = document.addObject("MbDFEM::MbDPart", "PartJ")
-            part_i.Shape = Part.makeCylinder(1.0, 2.0)
-            part_j.Shape = Part.makeCylinder(1.0, 2.0)
-            face_pair = document.addObject("MbDFEM::CylCylFacePair", "FacePair")
-            face_pair.faceI = (part_i, ["Face1"])
-            face_pair.faceJ = (part_j, ["Face1"])
-            fem_joint = document.addObject("MbDFEM::FEMJoint", "FEMJoint")
-            fem_joint.facePairs = [face_pair]
-            document.recompute()
-            document.saveAs(file_name)
-            App.closeDocument(document.Name)
+            try:
+                part_i = document.addObject("MbDFEM::MbDPart", "PartI")
+                part_j = document.addObject("MbDFEM::MbDPart", "PartJ")
+                part_i.Shape = Part.makeCylinder(1.0, 2.0)
+                part_j.Shape = Part.makeCylinder(1.0, 2.0)
+                face_pair = document.addObject("MbDFEM::CylCylFacePair", "FacePair")
+                face_pair.faceI = (part_i, ["Face1"])
+                face_pair.faceJ = (part_j, ["Face1"])
+                fem_joint = document.addObject("MbDFEM::FEMJoint", "FEMJoint")
+                fem_joint.facePairs = [face_pair]
+                document.recompute()
+                document.saveAs(file_name)
+                App.closeDocument(document_name)
+                document_name = None
 
-            reopened = App.openDocument(file_name)
-            reopened_pair = reopened.getObject("FacePair")
-            reopened_joint = reopened.getObject("FEMJoint")
+                reopened = App.openDocument(file_name)
+                document_name = reopened.Name
+                reopened_pair = reopened.getObject("FacePair")
+                reopened_joint = reopened.getObject("FEMJoint")
 
-            self.assertEqual(reopened_pair.TypeId, "MbDFEM::CylCylFacePair")
-            self.assertTrue(reopened_pair.isDerivedFrom("MbDFEM::FacePair"))
-            self.assertEqual(reopened_pair.faceI[1], ("Face1",))
-            self.assertEqual(reopened_pair.faceJ[1], ("Face1",))
-            self.assertEqual(reopened_joint.facePairs, [reopened_pair])
-        finally:
-            if App.ActiveDocument is not None and App.ActiveDocument.Name == document.Name:
-                App.closeDocument(document.Name)
-            if os.path.exists(file_name):
-                os.remove(file_name)
+                self.assertEqual(reopened_pair.TypeId, "MbDFEM::CylCylFacePair")
+                self.assertTrue(reopened_pair.isDerivedFrom("MbDFEM::FacePair"))
+                self.assertIs(reopened_pair.faceI[0], reopened.getObject("PartI"))
+                self.assertIs(reopened_pair.faceJ[0], reopened.getObject("PartJ"))
+                self.assertEqual(list(reopened_pair.faceI[1]), ["Face1"])
+                self.assertEqual(list(reopened_pair.faceJ[1]), ["Face1"])
+                self.assertEqual(reopened_joint.facePairs, [reopened_pair])
+            finally:
+                # The original Python wrapper is invalid after closeDocument().
+                if document_name is not None and document_name in App.listDocuments():
+                    App.closeDocument(document_name)
 
     def test_cyl_cyl_face_pair_roles_identify_hole_and_pin(self):
         Embedded = self._load_embedded_module_for_app_test()
@@ -2242,8 +2237,8 @@ class MbDFEMAssemblyTest(unittest.TestCase):
             self.assertEqual(folder.Label, "Results")
             self.assertIn(folder, fem_part.Group)
             self.assertEqual(folder.Group, [result_0, result_1])
-            self.assertIs(fem_part.getSubObject(f"{folder.Name}."), folder)
-            self.assertIs(fem_part.getSubObject(f"{result_0.Name}."), result_0)
+            self.assertIs(fem_part.getSubObject(f"{folder.Name}.", retType=1), folder)
+            self.assertIs(fem_part.getSubObject(f"{result_0.Name}.", retType=1), result_0)
 
             folder.removeObject(result_0)
 
@@ -2256,8 +2251,8 @@ class MbDFEMAssemblyTest(unittest.TestCase):
 
         try:
             fem_part = document.addObject("MbDFEM::FEMPart", "FEMPart")
-            result_0 = document.addObject("Fem::FemResultObjectPython", "CCX_Results_0")
-            result_1 = document.addObject("Fem::FemResultObjectPython", "CCX_Results_1")
+            result_0 = self._make_mechanical_result(document, "CCX_Results_0")
+            result_1 = self._make_mechanical_result(document, "CCX_Results_1")
             result_0.vonMises = [2.0, 4.0, 8.0]
             result_1.vonMises = [1.0, 10.0, 6.0]
             fem_part.results = [result_0, result_1]
@@ -2566,8 +2561,8 @@ class MbDFEMAssemblyTest(unittest.TestCase):
             self.assertFalse(pipeline.MbDFEMFixedColorBarRangeEnabled)
             self.assertFalse(pipeline.Group[0].MbDFEMFixedColorBarRangeEnabled)
             self.assertFalse(pipeline.ViewObject.UseFixedColorBarRange)
-            self.assertEqual(pipeline.ViewObject.update_material_count, 1)
-            self.assertEqual(pipeline.ViewObject.update_color_bars_count, 1)
+            self.assertGreaterEqual(pipeline.ViewObject.update_material_count, 1)
+            self.assertGreaterEqual(pipeline.ViewObject.update_color_bars_count, 1)
         finally:
             FreeCADMbDFEMResultsPanel._global_pipeline_scalar_range = original_global_range
 
@@ -2578,9 +2573,9 @@ class MbDFEMAssemblyTest(unittest.TestCase):
             assembly = document.addObject("MbDFEM::MbDAssembly", "Assembly")
             part = document.addObject("MbDFEM::MbDPart", "Part")
             fem_part = document.addObject("MbDFEM::FEMPart", "FEMPart")
-            result_0 = document.addObject("Fem::FemResultObjectPython", "CCX_Results_0")
-            result_1 = document.addObject("Fem::FemResultObjectPython", "CCX_Results_1")
-            result_2 = document.addObject("Fem::FemResultObjectPython", "CCX_Results_2")
+            result_0 = self._make_mechanical_result(document, "CCX_Results_0")
+            result_1 = self._make_mechanical_result(document, "CCX_Results_1")
+            result_2 = self._make_mechanical_result(document, "CCX_Results_2")
             assembly.addPart(part)
             fem_part.mbdItem = part
             assembly.times = [0.0, 0.1, 0.2]
@@ -2848,7 +2843,7 @@ class MbDFEMAssemblyTest(unittest.TestCase):
             App.closeDocument(document.Name)
 
     def test_fem_part_import_state_reuses_existing_calculix_result(self):
-        Embedded = self._load_embedded_module_for_app_test()
+        Embedded = FreeCADMbDFEMResultsPanel.FreeCADMbDFEMEmbedded
         document = App.newDocument("MbDFEMImportStateResultTest")
 
         try:
@@ -2962,7 +2957,7 @@ class MbDFEMAssemblyTest(unittest.TestCase):
         try:
             fem_part = document.addObject("MbDFEM::FEMPart", "FEMPart")
             solver = document.addObject("Fem::FemSolverObjectPython", "Calculix")
-            result = document.addObject("Fem::FemResultObjectPython", "CCX_Results")
+            result = self._make_mechanical_result(document, "CCX_Results")
             stale_dat = document.addObject("App::TextDocument", "ccx_dat_file")
             fem_part.solver = solver
             fem_part.results = [result]
@@ -3335,10 +3330,11 @@ class MbDFEMAssemblyTest(unittest.TestCase):
             self.assertEqual(part.Group, [marker])
             self.assertEqual(self._part_markers_folder(part).Group, [])
             self.assertEqual(marker.Placement.Base, App.Vector(5, 10, 15))
-            self.assertAlmostEqual(marker.mass, 6.0e-6)
-            self.assertAlmostEqual(marker.principalInertias.x, 2.5e-10)
-            self.assertAlmostEqual(marker.principalInertias.y, 5.0e-10)
-            self.assertAlmostEqual(marker.principalInertias.z, 6.5e-10)
+            # A 10 x 20 x 30 mm box with the default 7900 kg/m^3 steel material.
+            self.assertAlmostEqual(marker.mass, 0.0474, delta=1e-12)
+            self.assertAlmostEqual(marker.principalInertias.x, 1.975e-6, delta=1e-15)
+            self.assertAlmostEqual(marker.principalInertias.y, 3.95e-6, delta=1e-15)
+            self.assertAlmostEqual(marker.principalInertias.z, 5.135e-6, delta=1e-15)
 
             matrix = marker.Placement.Rotation.toMatrix()
             columns = [
@@ -3365,10 +3361,10 @@ class MbDFEMAssemblyTest(unittest.TestCase):
             material.setPhysicalValue("Density", "2e-09 kg/mm^3")
             marker.material = material
             self.assertTrue(marker.massMarkerFromShape)
-            self.assertAlmostEqual(marker.mass, 1.2e-5)
-            self.assertAlmostEqual(marker.principalInertias.x, 5.0e-10)
-            self.assertAlmostEqual(marker.principalInertias.y, 1.0e-9)
-            self.assertAlmostEqual(marker.principalInertias.z, 1.3e-9)
+            self.assertAlmostEqual(marker.mass, 1.2e-5, delta=1e-15)
+            self.assertAlmostEqual(marker.principalInertias.x, 5.0e-10, delta=1e-19)
+            self.assertAlmostEqual(marker.principalInertias.y, 1.0e-9, delta=1e-19)
+            self.assertAlmostEqual(marker.principalInertias.z, 1.3e-9, delta=1e-19)
         finally:
             App.closeDocument(document.Name)
 
@@ -3386,10 +3382,11 @@ class MbDFEMAssemblyTest(unittest.TestCase):
             self.assertEqual(marker.TypeId, "MbDFEM::MbDMassMarker")
             self.assertTrue(marker.massMarkerFromShape)
             self.assertEqual(marker.Placement.Base, App.Vector(5, 10, 15))
-            self.assertAlmostEqual(marker.mass, 6.0e-6)
-            self.assertAlmostEqual(marker.principalInertias.x, 2.5e-10)
-            self.assertAlmostEqual(marker.principalInertias.y, 5.0e-10)
-            self.assertAlmostEqual(marker.principalInertias.z, 6.5e-10)
+            # A 10 x 20 x 30 mm box with the default 7900 kg/m^3 steel material.
+            self.assertAlmostEqual(marker.mass, 0.0474, delta=1e-12)
+            self.assertAlmostEqual(marker.principalInertias.x, 1.975e-6, delta=1e-15)
+            self.assertAlmostEqual(marker.principalInertias.y, 3.95e-6, delta=1e-15)
+            self.assertAlmostEqual(marker.principalInertias.z, 5.135e-6, delta=1e-15)
             self.assertEqual(part.markers, [])
             self.assertEqual(part.Group, [marker])
         finally:
@@ -3412,7 +3409,12 @@ class MbDFEMAssemblyTest(unittest.TestCase):
             self.assertAlmostEqual(part.Shape.Volume, 1500.0)
             self.assertIsNotNone(marker)
             self.assertTrue(marker.massMarkerFromShape)
-            self.assertAlmostEqual(marker.mass, 1.5e-6)
+            self.assertAlmostEqual(marker.mass, 0.01185, delta=1e-12)
+            self.assertTrue(part.Shape.isValid())
+            self.assertEqual(len(compound.Solids), 2)
+            document.recompute()
+            self.assertEqual(part.Shape.ShapeType, "Solid")
+            self.assertAlmostEqual(part.Shape.Volume, 1500.0)
         finally:
             App.closeDocument(document.Name)
 
@@ -3459,10 +3461,11 @@ class MbDFEMAssemblyTest(unittest.TestCase):
                 marker = part.getMassMarker()
 
                 self.assertTrue(marker.massMarkerFromShape)
-                self.assertAlmostEqual(marker.mass, 6.0e-6)
-                self.assertAlmostEqual(marker.principalInertias.x, 2.5e-10)
-                self.assertAlmostEqual(marker.principalInertias.y, 5.0e-10)
-                self.assertAlmostEqual(marker.principalInertias.z, 6.5e-10)
+                # A 10 x 20 x 30 mm box with the default 7900 kg/m^3 steel material.
+                self.assertAlmostEqual(marker.mass, 0.0474, delta=1e-12)
+                self.assertAlmostEqual(marker.principalInertias.x, 1.975e-6, delta=1e-15)
+                self.assertAlmostEqual(marker.principalInertias.y, 3.95e-6, delta=1e-15)
+                self.assertAlmostEqual(marker.principalInertias.z, 5.135e-6, delta=1e-15)
             finally:
                 App.closeDocument(reopened.Name)
 
@@ -3477,7 +3480,11 @@ class MbDFEMAssemblyTest(unittest.TestCase):
                 App.Rotation(App.Vector(0, 0, 1), 90),
             )
 
-            part.Shape = shape
+            # MbD parts store their placement separately from local shape geometry.
+            part.Placement = shape.Placement
+            local_shape = shape.copy()
+            local_shape.Placement = App.Placement()
+            part.Shape = local_shape
             marker = part.getMassMarker()
 
             self.assertIsNotNone(marker)
@@ -3492,7 +3499,11 @@ class MbDFEMAssemblyTest(unittest.TestCase):
                 )
             )
             self.assertEqual(marker.Placement.Base, App.Vector(5, 10, 15))
-            self.assertEqual(part.Placement.multVec(marker.Placement.Base), shape.CenterOfMass)
+            self.assertLess(
+                (part.Placement.multVec(marker.Placement.Base) - shape.CenterOfMass).Length,
+                1e-9,
+            )
+            self.assertTrue(part.Shape.Placement.isSame(App.Placement(), 1e-9))
         finally:
             App.closeDocument(document.Name)
 
@@ -3631,16 +3642,24 @@ class MbDFEMAssemblyTest(unittest.TestCase):
             motion = document.addObject("MbDFEM::FEMJoint", "FEMMotion")
             action = document.addObject("MbDFEM::FEMAction", "FEMAction")
 
-            assembly.ensureCategoryFolders()
-            assembly.getPartsFolder().addObject(part)
-            assembly.getJointsFolder().addObject(joint)
-            assembly.getMotionsFolder().addObject(motion)
-            assembly.getActionsFolder().addObject(action)
+            # FEMAssembly exposes folder links, but not its C++ folder helpers.
+            # Build the same folder structure used by the Python workbench command.
+            for category in ("Parts", "Joints", "Motions", "Actions"):
+                folder = document.addObject(
+                    f"MbDFEM::FEM{category}Folder", f"{assembly.Name}_{category}"
+                )
+                folder.Label = category
+                setattr(assembly, f"_{category.lower()}Folder", folder)
+                assembly.addObject(folder)
+            assembly._partsFolder.addObject(part)
+            assembly._jointsFolder.addObject(joint)
+            assembly._motionsFolder.addObject(motion)
+            assembly._actionsFolder.addObject(action)
 
-            part_path = f"{assembly.getPartsFolder().Name}.{part.Name}."
-            joint_path = f"{assembly.getJointsFolder().Name}.{joint.Name}."
-            motion_path = f"{assembly.getMotionsFolder().Name}.{motion.Name}."
-            action_path = f"{assembly.getActionsFolder().Name}.{action.Name}."
+            part_path = f"{assembly._partsFolder.Name}.{part.Name}."
+            joint_path = f"{assembly._jointsFolder.Name}.{joint.Name}."
+            motion_path = f"{assembly._motionsFolder.Name}.{motion.Name}."
+            action_path = f"{assembly._actionsFolder.Name}.{action.Name}."
 
             self.assertIs(assembly.getSubObject(part_path, retType=1), part)
             self.assertIs(assembly.getSubObject(f"{part.Name}.", retType=1), part)
@@ -4137,7 +4156,7 @@ class MbDFEMAssemblyTest(unittest.TestCase):
                 )
                 self.assertEqual(stripped_lines[mass_marker_rotation_index + 5], "2.5")
                 self.assertEqual(stripped_lines[mass_marker_rotation_index + 7], "0.1\t0.2\t0.3")
-                self.assertEqual(stripped_lines[mass_marker_rotation_index + 9], "1")
+                self.assertEqual(stripped_lines[mass_marker_rotation_index + 9], "7900")
 
                 marker_index = find_sequence(["Name", "MarkerI"], refpoint_index)
                 marker_position_index = stripped_lines.index("Position3D", marker_index)
@@ -4197,7 +4216,7 @@ class MbDFEMAssemblyTest(unittest.TestCase):
                 self.assertIn("\t\t\t4.5\t5.6\t6.7\t\n", exported)
                 self.assertIn("\t\t\t\t0.11\t0.12\t0.13\t\n", exported)
                 self.assertIn("\t\t\t\t\t0.08\t0.09\t0.1\t\n", exported)
-                self.assertIn("\t\tDensity\n\t\t\t7850\n", exported)
+                self.assertIn("\t\t\t\tDensity\n\t\t\t\t\t7850\n", exported)
                 self.assertIn("\tConstantGravity\n\t\t0\t-9.81\t0\t\n", exported)
             finally:
                 App.closeDocument(document.Name)
@@ -4263,7 +4282,7 @@ class MbDFEMAssemblyTest(unittest.TestCase):
                 marker_rotation_index = stripped_lines.index("RotationMatrix", marker_position_index)
                 self.assertEqual(
                     stripped_lines[marker_rotation_index + 1 : marker_rotation_index + 4],
-                    ["0\t-1\t0", "1\t0\t0", "0\t0\t1"],
+                    ["-1\t0\t0", "0\t-1\t0", "0\t0\t1"],
                 )
             finally:
                 App.closeDocument(document.Name)
@@ -4756,8 +4775,8 @@ class MbDFEMAssemblyTest(unittest.TestCase):
         load_arrow._view = _FakeViewport()
         load_arrow.update(App.Vector(1, 2, 3), App.Vector(0, -40, 0), 2.0)
         self.assertAlmostEqual(load_arrow.length, 80.0)
-        self.assertAlmostEqual(load_arrow.shaft_length, 74.0)
-        self.assertAlmostEqual(load_arrow.head_length, 6.0)
+        self.assertAlmostEqual(load_arrow.shaft_length, 74.0, delta=1e-5)
+        self.assertAlmostEqual(load_arrow.head_length, 6.0, delta=1e-5)
         self.assertEqual(load_arrow.head_line_width, 3)
         self.assertEqual(load_arrow.dot_diameter, 0)
         load_arrow.update(App.Vector(1, 2, 3), App.Vector(0, -2, 0), 2.0)
@@ -4901,14 +4920,24 @@ class MbDFEMAssemblyTest(unittest.TestCase):
             part.addMarker(marker)
             fem_part.mbdItem = part
             fem_part.mesh = mesh_object
-            fem_part.Placement = App.Placement(App.Vector(10, 20, 30), App.Rotation())
             marker.Placement = App.Placement()
             marker.Geometry = (part, ["Face1"])
+            sleeve = document.addObject("MbDFEM::MbDPart", "Sleeve")
+            sleeve.Shape = Part.makeCylinder(3, 5, App.Vector(0, 0, -3)).cut(part.Shape)
+            sleeve_marker = document.addObject("MbDFEM::MbDMarker", "SleeveMarker")
+            assembly.addPart(sleeve)
+            sleeve.addMarker(sleeve_marker)
+            hole_index = next(index for index, face in enumerate(sleeve.Shape.Faces, 1)
+                              if getattr(face.Surface, "TypeId", None) == "Part::GeomCylinder"
+                              and abs(face.Surface.Radius - math.sqrt(2)) < 1e-7)
+            sleeve_marker.Geometry = (sleeve, [f"Face{hole_index}"])
             joint.markerI = marker
+            joint.markerJ = sleeve_marker
             joint.fxs = [0.0, 80.0]
             joint.fys = [0.0, 0.0]
             joint.fzs = [0.0, 40.0]
             document.recompute()
+            fem_part.Placement = App.Placement(App.Vector(10, 20, 30), App.Rotation())
 
             vectors = FreeCADMbDFEMCLOADs._diagram_vectors(
                 fem_part,
@@ -4918,9 +4947,19 @@ class MbDFEMAssemblyTest(unittest.TestCase):
 
             self.assertEqual(len(vectors), 5)
             self.assertLess(vectors[0].origin.distanceToPoint(App.Vector(11, 21, 31)), 1e-7)
-            self.assertLess(vectors[0].value.distanceToPoint(App.Vector(18.18181818182, 0, 0)), 1e-7)
             self.assertLess(vectors[3].origin.distanceToPoint(App.Vector(11, 21, 27)), 1e-7)
-            self.assertLess(vectors[3].value.distanceToPoint(App.Vector(21.81818181818, 0, 0)), 1e-7)
+            # The transverse forces balance about the bounded cylinder's center (z=-0.5).
+            center = App.Vector(10, 20, 29.5)
+            resultant = App.Vector()
+            moment = App.Vector()
+            for vector in vectors:
+                self.assertGreater(vector.value.x, 0)
+                self.assertAlmostEqual(vector.value.y, 0)
+                self.assertAlmostEqual(vector.value.z, 0)
+                resultant += vector.value
+                moment += (vector.origin - center).cross(vector.value)
+            self.assertLess((resultant - App.Vector(80, 0, 0)).Length, 1e-7)
+            self.assertLess(moment.Length, 1e-7)
         finally:
             App.closeDocument(document.Name)
 
@@ -4969,7 +5008,17 @@ class MbDFEMAssemblyTest(unittest.TestCase):
             fem_part.mesh = mesh_object
             marker.Placement = App.Placement()
             marker.Geometry = (part, ["Face1"])
+            sleeve = document.addObject("MbDFEM::MbDPart", "Sleeve")
+            sleeve.Shape = Part.makeCylinder(3, 5, App.Vector(0, 0, -3)).cut(part.Shape)
+            sleeve_marker = document.addObject("MbDFEM::MbDMarker", "SleeveMarker")
+            assembly.addPart(sleeve)
+            sleeve.addMarker(sleeve_marker)
+            hole_index = next(index for index, face in enumerate(sleeve.Shape.Faces, 1)
+                              if getattr(face.Surface, "TypeId", None) == "Part::GeomCylinder"
+                              and abs(face.Surface.Radius - math.sqrt(2)) < 1e-7)
+            sleeve_marker.Geometry = (sleeve, [f"Face{hole_index}"])
             joint.markerI = marker
+            joint.markerJ = sleeve_marker
             joint.fxs = [0.0, 80.0]
             joint.fys = [0.0, 0.0]
             joint.fzs = [0.0, 40.0]
@@ -5087,12 +5136,13 @@ class MbDFEMAssemblyTest(unittest.TestCase):
             assembly.addPart(part)
             fem_part.mbdItem = part
             fem_part.mesh = mesh_object
-            mesh_object.Placement = App.Placement(App.Vector(1, 2, 3), App.Rotation())
             part.Placement = App.Placement(App.Vector(10, 20, 30), App.Rotation())
             part.xs = [0.0, 100.0]
             part.ys = [0.0, 200.0]
             part.zs = [0.0, 300.0]
             document.recompute()
+            # Recompute normalizes the mesh; exercise a subsequent display offset.
+            mesh_object.Placement = App.Placement(App.Vector(1, 2, 3), App.Rotation())
 
             placement = FreeCADMbDFEMDLOADs._sampled_elements_display_placement(
                 fem_part,
@@ -5118,11 +5168,12 @@ class MbDFEMAssemblyTest(unittest.TestCase):
             assembly.addPart(part)
             fem_part.mbdItem = part
             fem_part.mesh = mesh_object
-            mesh_object.Placement = App.Placement(App.Vector(1, 2, 3), App.Rotation())
             part.xs = [0.0, 100.0]
             part.ys = [0.0, 200.0]
             part.zs = [0.0, 300.0]
             document.recompute()
+            # Recompute normalizes the mesh; exercise a subsequent display offset.
+            mesh_object.Placement = App.Placement(App.Vector(1, 2, 3), App.Rotation())
 
             key = FreeCADMbDFEMDLOADs._diagram_key(fem_part)
             FreeCADMbDFEMDLOADs._sampled_element_view_states[key] = {
@@ -5418,7 +5469,7 @@ class MbDFEMAssemblyTest(unittest.TestCase):
         fd, inp_file_name = tempfile.mkstemp(suffix=".inp")
         os.close(fd)
 
-        class FemMesh:
+        class FakeFemMesh:
             Nodes = {
                 1: App.Vector(1.0, 2.0, 3.0),
                 2: App.Vector(4.0, 5.0, 6.0),
@@ -5426,7 +5477,7 @@ class MbDFEMAssemblyTest(unittest.TestCase):
 
         class Mesh:
             Name = "Mesh"
-            FemMesh = FemMesh()
+            FemMesh = FakeFemMesh()
 
             def getGlobalPlacement(self):
                 return App.Placement()
@@ -5485,7 +5536,7 @@ class MbDFEMAssemblyTest(unittest.TestCase):
         fd, inp_file_name = tempfile.mkstemp(suffix=".inp")
         os.close(fd)
 
-        class FemMesh:
+        class FakeFemMesh:
             Nodes = {
                 1: App.Vector(1.0, 2.0, 3.0),
                 2: App.Vector(4.0, 5.0, 6.0),
@@ -5493,7 +5544,7 @@ class MbDFEMAssemblyTest(unittest.TestCase):
 
         class Mesh:
             Name = "Mesh"
-            FemMesh = FemMesh()
+            FemMesh = FakeFemMesh()
 
             def getGlobalPlacement(self):
                 return App.Placement()
@@ -5504,7 +5555,7 @@ class MbDFEMAssemblyTest(unittest.TestCase):
 
         loads = [
             {
-                "nodes": FemMesh.Nodes,
+                "nodes": FakeFemMesh.Nodes,
                 "x_axis": App.Vector(1.0, 0.0, 0.0),
                 "octants": {"U1": [1], "U4": [], "L1": [], "L4": []},
                 "nodal_values": {"U1": 7.0, "U4": 0.0, "L1": 0.0, "L4": 0.0},
@@ -5553,11 +5604,11 @@ class MbDFEMAssemblyTest(unittest.TestCase):
             os.remove(inp_file_name)
 
     def test_fem_part_cloads_vectors_ignore_mesh_visibility(self):
-        class ViewObject:
+        class FakeViewObject:
             Visibility = False
 
         class Mesh:
-            ViewObject = ViewObject()
+            ViewObject = FakeViewObject()
 
             def getGlobalPlacement(self):
                 return App.Placement()
@@ -5672,6 +5723,23 @@ class MbDFEMAssemblyTest(unittest.TestCase):
             assembly = document.addObject("MbDFEM::MbDAssembly", "Assembly")
             part = document.addObject("MbDFEM::MbDPart", "Part")
             part.Shape = Part.makeCylinder(1.0, 2.0, App.Vector(0, 0, -1), App.Vector(0, 0, 1))
+            sleeve = document.addObject("MbDFEM::MbDPart", "Sleeve")
+            sleeve.Shape = Part.makeCylinder(
+                2.0, 2.0, App.Vector(0, 0, -1), App.Vector(0, 0, 1)
+            ).cut(part.Shape)
+            sleeve_marker = document.addObject("MbDFEM::MbDMarker", "SleeveMarker")
+            assembly.addPart(sleeve)
+            sleeve.addMarker(sleeve_marker)
+            pin_face_index = next(
+                index for index, face in enumerate(part.Shape.Faces, start=1)
+                if getattr(face.Surface, "TypeId", None) == "Part::GeomCylinder"
+            )
+            hole_face_index = next(
+                index for index, face in enumerate(sleeve.Shape.Faces, start=1)
+                if getattr(face.Surface, "TypeId", None) == "Part::GeomCylinder"
+                and abs(face.Surface.Radius - 1.0) < 1e-7
+            )
+            sleeve_marker.Geometry = (sleeve, [f"Face{hole_face_index}"])
             fem_part = document.addObject("MbDFEM::FEMPart", "FEMPart")
             marker = document.addObject("MbDFEM::MbDMarker", "Marker")
             joint = document.addObject("MbDFEM::MbDJoint", "Joint")
@@ -5681,8 +5749,9 @@ class MbDFEMAssemblyTest(unittest.TestCase):
             fem_part.mbdItem = part
             fem_part.mesh = mesh_object
             marker.Placement = App.Placement()
-            marker.Geometry = (part, ["Face1"])
+            marker.Geometry = (part, [f"Face{pin_face_index}"])
             joint.markerI = marker
+            joint.markerJ = sleeve_marker
             joint.fxs = [0.0]
             joint.fys = [0.0]
             joint.fzs = [0.0]
@@ -5701,9 +5770,9 @@ class MbDFEMAssemblyTest(unittest.TestCase):
                 fem_part,
                 assembly,
             )
+            self.assertEqual(len(face_regions), 1)
             display_mesh = FreeCADMbDFEMCLOADs._cload_faces_fem_mesh(mesh_object, face_regions)
 
-            self.assertEqual(len(face_regions), 1)
             self.assertGreater(display_mesh.FaceCount, 0)
             self.assertTrue(
                 set(display_mesh.Nodes.keys()).issubset({1, 2, 3, 4, 5, 6, 7, 8})

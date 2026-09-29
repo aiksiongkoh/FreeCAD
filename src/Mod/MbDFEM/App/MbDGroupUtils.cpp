@@ -7,6 +7,7 @@
 #include <App/DocumentObjectGroup.h>
 #include <App/GeoFeatureGroupExtension.h>
 #include <App/GroupExtension.h>
+#include <Base/Tools.h>
 
 #include "MbDAssembly.h"
 #include "MbDPart.h"
@@ -136,6 +137,9 @@ void MbDFEM::removeChildFromListFolderAndGeoGroup(App::DocumentObject* owner,
                                                   App::DocumentObjectGroup* folder,
                                                   App::DocumentObject* child)
 {
+    // Defer list-driven synchronization until the folder no longer contains the child.
+    Base::ObjectStatusLocker<App::Property::Status, App::Property> guard(
+        App::Property::User3, &list);
     removeAll(list, child);
     removeFromFolder(folder, child);
 
