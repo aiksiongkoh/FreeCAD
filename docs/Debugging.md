@@ -5,11 +5,11 @@ for this MbDFEM workspace.
 
 ## Debug Configuration
 
-The local VS Code launch configuration uses the Microsoft Visual Studio debugger:
+The checked-in VS Code launch configuration uses the Microsoft Visual Studio debugger:
 
 ```json
 {
-    "name": "Debug FreeCAD",
+    "name": "Debug MbDFEM",
     "type": "cppvsdbg",
     "request": "launch",
     "program": "${workspaceFolder}/build/debug/bin/FreeCAD_d.exe",
@@ -18,7 +18,12 @@ The local VS Code launch configuration uses the Microsoft Visual Studio debugger
 }
 ```
 
-Use **Run and Debug > Debug FreeCAD** and press `F5`.
+Use **Run and Debug > Debug MbDFEM** or **Full Debug FreeCAD** and press `F5`.
+The checked-in launch configurations use `build/debug`, with an incremental
+C++ build and MbDFEM script refresh before launch. **Fast Debug FreeCAD**
+refreshes only scripts and caches after the first full build.
+
+For a fresh Windows checkout, follow [Setup.md](Setup.md#6-configure-and-build-windows-debug).
 
 `stopAtEntry` is useful while validating debugger setup. Once startup debugging
 is no longer needed, set it back to `false`.

@@ -44,26 +44,34 @@ ViewProviderFEMAssembly::ViewProviderFEMAssembly()
     , childRoot(new SoGroup)
 {
     sPixmap = "Document";
-    ADD_PROPERTY_TYPE(DLOADAutoScale,
-                      (true),
-                      "MbDFEM",
-                      App::Prop_None,
-                      "Scale DLOAD arrows from assembly-wide result magnitudes");
-    ADD_PROPERTY_TYPE(DLOADScale,
-                      (1.0),
-                      "MbDFEM",
-                      App::Prop_None,
-                      "DLOAD arrow scale multiplier, or absolute scale when auto-scale is off");
-    ADD_PROPERTY_TYPE(CLOADAutoScale,
-                      (true),
-                      "MbDFEM",
-                      App::Prop_None,
-                      "Scale CLOAD arrows from assembly-wide result magnitudes");
-    ADD_PROPERTY_TYPE(CLOADScale,
-                      (1.0),
-                      "MbDFEM",
-                      App::Prop_None,
-                      "CLOAD arrow scale multiplier, or absolute scale when auto-scale is off");
+    ADD_PROPERTY_TYPE(
+        DLOADAutoScale,
+        (true),
+        "MbDFEM",
+        App::Prop_None,
+        "Scale DLOAD arrows from assembly-wide result magnitudes"
+    );
+    ADD_PROPERTY_TYPE(
+        DLOADScale,
+        (1.0),
+        "MbDFEM",
+        App::Prop_None,
+        "DLOAD arrow scale multiplier, or absolute scale when auto-scale is off"
+    );
+    ADD_PROPERTY_TYPE(
+        CLOADAutoScale,
+        (true),
+        "MbDFEM",
+        App::Prop_None,
+        "Scale CLOAD arrows from assembly-wide result magnitudes"
+    );
+    ADD_PROPERTY_TYPE(
+        CLOADScale,
+        (1.0),
+        "MbDFEM",
+        App::Prop_None,
+        "CLOAD arrow scale multiplier, or absolute scale when auto-scale is off"
+    );
 
     childSwitch->ref();
     childRoot->ref();
@@ -115,6 +123,12 @@ std::vector<App::DocumentObject*> ViewProviderFEMAssembly::claimChildren() const
     hideOriginInTree(assembly);
 
     std::vector<App::DocumentObject*> children;
+    if (auto* parameters = assembly->femParameters.getValue()) {
+        children.push_back(parameters);
+    }
+    if (auto* parameters = assembly->animationParameters.getValue()) {
+        children.push_back(parameters);
+    }
     auto folders = assembly->getCategoryFolders();
     children.insert(children.end(), folders.begin(), folders.end());
     return children;
@@ -171,9 +185,8 @@ void ViewProviderFEMAssembly::onChanged(const App::Property* prop)
         const bool isCLOAD = prop == &CLOADAutoScale || prop == &CLOADScale;
         const bool forceScalePrepare = prop == &DLOADAutoScale || prop == &CLOADAutoScale;
         const std::string module = isCLOAD ? "FreeCADMbDFEMCLOADs" : "FreeCADMbDFEMDLOADs";
-        const std::string script =
-            "import " + module + "\n" + module + ".refresh_assembly_diagrams("
-            + quotedPythonString(document->getName()) + ", "
+        const std::string script = "import " + module + "\n" + module
+            + ".refresh_assembly_diagrams(" + quotedPythonString(document->getName()) + ", "
             + quotedPythonString(assembly->getNameInDocument()) + ", "
             + std::string(forceScalePrepare ? "True" : "False") + ")";
         Base::Interpreter().runString(script.c_str());

@@ -17,7 +17,7 @@ public:
     MbDAnimationParameters();
     ~MbDAnimationParameters() override = default;
 
-    App::PropertyInteger updateRate;
+    App::PropertyFloat updateRate;
     App::PropertyInteger currentFrame;
     App::PropertyInteger startFrame;
     App::PropertyInteger endFrame;
@@ -27,6 +27,11 @@ public:
     App::PropertyInteger trailLength;
     App::PropertyBool loop;
     App::PropertyBool interpolateFrames;
+    void handleChangedPropertyType(
+        Base::XMLReader& reader,
+        const char* typeName,
+        App::Property* prop
+    ) override;
 
     const char* getViewProviderName() const override
     {

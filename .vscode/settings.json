@@ -1,0 +1,8 @@
+{
+    "cmake.useCMakePresets": "always",
+    "cmake.configurePreset": "windows-debug",
+    "cmake.buildPreset": "windows-debug",
+    "cmake.configureOnOpen": false,
+    "C_Cpp.default.compileCommands": "${workspaceFolder}/build/debug/compile_commands.json",
+    "python-envs.defaultEnvManager": "ms-python.python:system"
+}

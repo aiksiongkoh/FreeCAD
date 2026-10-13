@@ -34,6 +34,7 @@ Install these first:
 - Visual Studio Community 2026 or the current Visual Studio version that
   provides the MSVC v145 x64 toolchain.
 - Visual Studio workload: **Desktop development with C++**.
+- Visual Studio component: **C++ CMake tools for Windows** (includes Ninja).
 - Windows 11 SDK.
 - Visual Studio Code.
 - Git for Windows.
@@ -191,81 +192,53 @@ Expected path contains:
 Hostx64\x64\cl.exe
 ```
 
-## 6. Configure With CMake Tools
+## 6. Configure and Build Windows Debug
 
-The checked-in `CMakePresets.json` contains a `debug` preset that writes to:
+The checked-in `windows-debug` preset inherits `debug` and always writes to
+`build/debug`. It enables MbDFEM, uses Ninja and the x64 MSVC toolchain, and
+copies the LibPack runtime dependencies into the build. No Windows user name
+or machine-specific dependency path is stored in the shared preset.
 
-```text
-build/debug
-```
-
-It currently points to this LibPack path:
-
-```text
-C:/Users/askoh/Documents/GitHub/FreeCAD/FreeCAD-LibPack/LibPack-26.3.0-v3.5.5-x64-Debug
-```
-
-On a different Windows account, either place the LibPack at the equivalent path
-for that user or create a local `CMakeUserPresets.json` that inherits `debug`
-and overrides `FREECAD_LIBPACK_DIR`.
-
-Recommended local override:
+After installing **Desktop development with C++**, **C++ CMake tools for
+Windows**, the Windows SDK, and extracting the Debug LibPack, run this from the
+checkout in ordinary PowerShell:
 
 ```powershell
-@"
-{
-  "version": 3,
-  "configurePresets": [
-    {
-      "name": "mbdfem-debug-local",
-      "displayName": "MbDFEM Debug Local",
-      "inherits": "debug",
-      "cacheVariables": {
-        "FREECAD_LIBPACK_DIR": {
-          "type": "PATH",
-          "value": "$($LibPack.Replace('\','/'))"
-        },
-        "BUILD_MBDFEM": {
-          "type": "BOOL",
-          "value": "ON"
-        }
-      }
-    }
-  ],
-  "buildPresets": [
-    {
-      "name": "mbdfem-debug-local",
-      "configurePreset": "mbdfem-debug-local"
-    }
-  ]
-}
-"@ | Set-Content -Encoding utf8 CMakeUserPresets.json
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/build-windows-debug.ps1 `
+    -LibPack "C:\path\to\LibPack-26.3.0-v3.5.5-x64-Debug"
 ```
 
-In VS Code:
-
-1. Press `Ctrl+Shift+P`.
-2. Run **CMake: Select Configure Preset**.
-3. Select `debug` or `mbdfem-debug-local`.
-4. Run **CMake: Configure**.
-
-Command-line equivalent:
+This initializes the Visual Studio x64 compiler environment, configures
+`build/debug`, and builds all targets. `-LibPack` is required only for the first
+configure; subsequent runs reuse the path saved in `build/debug/CMakeCache.txt`:
 
 ```powershell
-cmake --preset debug
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/build-windows-debug.ps1
 ```
 
-or:
+Use `-Action Configure` to configure only, `-Action Scripts` to refresh MbDFEM
+Python scripts and clear their bytecode cache, and `-Jobs 2` to reduce build
+parallelism on a smaller computer. To change LibPack, pass its new path together
+with `-Action Configure`.
+
+For direct CMake or CMake Tools usage, start VS Code from an x64 Visual Studio
+developer environment with `FREECAD_LIBPACK_DIR` set:
 
 ```powershell
-cmake --preset mbdfem-debug-local
+$env:FREECAD_LIBPACK_DIR = "C:\path\to\LibPack-26.3.0-v3.5.5-x64-Debug"
+cmake --preset windows-debug
+cmake --build --preset windows-debug
+code .
 ```
 
-Successful configuration writes build files to:
+The repository includes portable `.vscode` settings, launch configurations,
+and tasks. No `CMakeUserPresets.json` is needed on a new computer. An optional
+local preset may inherit `windows-debug` to override dependencies, but should
+inherit its `build/debug` output directory too.
 
-```text
-build/debug
-```
+When switching from another build directory, configure and rebuild rather than
+renaming the old directory: CMake caches and generated files contain absolute
+paths. Keep the old build until the new build is verified.
 
 ## 7. Build
 
@@ -311,7 +284,9 @@ cwd = build/debug/bin
 debugger = cppvsdbg
 ```
 
-Use **Run and Debug > Debug FreeCAD** and press `F5`.
+Use **Run and Debug > Debug MbDFEM** or **Full Debug FreeCAD** and press `F5`.
+Both run an incremental C++ build before launch. **Fast Debug FreeCAD** refreshes
+only scripts and caches; build all targets once before using it.
 
 `stopAtEntry` may be set to `true` while testing debugger startup. If enabled,
 FreeCAD stops at `main()` first. Press Continue to reach later breakpoints.
@@ -349,6 +324,23 @@ import TestMbDFEMApp
 Test.runTestsFromModule(TestMbDFEMApp)
 ```
 
+### Windows Application Control troubleshooting
+
+If a workbench or Python test reports `An Application Control policy has blocked
+this file` while importing `PySide6.QtWidgets`, inspect the Windows
+`Microsoft-Windows-CodeIntegrity/Operational` event log. On this development
+computer, Smart App Control rejected the unsigned LibPack file
+`bin/Lib/site-packages/PySide6/QtWidgets_d.cp314-win_amd64.pyd` even though the full
+Debug build succeeded. Its SHA-256 matched the original LibPack file.
+
+This is separate from the build directory and CMake configuration. A normal
+PowerShell execution-policy override does not allow a blocked native extension.
+Use a compatible runtime with an accepted signature, or review the computer's
+Windows security configuration with its owner or administrator. The setup script
+does not change Windows security policies. Microsoft's
+[Smart App Control FAQ](https://support.microsoft.com/en-us/windows/security/threat-malware-protection/smart-app-control-frequently-asked-questions)
+explains the signing requirements and lack of individual-app exceptions.
+
 ## 10. Keep the Shared Branch Updated
 
 For this shared branch, prefer merging upstream `main` instead of rebasing:
@@ -381,12 +373,16 @@ src/Mod/MbDFEM
 docs
 CMakePresets.json
 src/Main/CMakeLists.txt
+.vscode/launch.json
+.vscode/tasks.json
+.vscode/settings.json
+.vscode/c_cpp_properties.json
+tools/build-windows-debug.ps1
 ```
 
 Local or generated files generally should not be committed:
 
 ```text
-.vscode
 build
 CMakeUserPresets.json
 *.log

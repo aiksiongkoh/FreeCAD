@@ -14,17 +14,23 @@ generate_from_py(MbDPart)
 
 set(MbDFEM_SRCS
     ../MbDFEMGlobal.h
+    AnnuAnnuFacePair.cpp
+    AnnuAnnuFacePair.h
     AppMbDFEM.cpp
-    AnulAnulFacePair.cpp
-    AnulAnulFacePair.h
     AsmtIO.cpp
     AsmtIO.h
     CylCylFacePair.cpp
     CylCylFacePair.h
     FEMAction.cpp
     FEMAction.h
+    FEMAnimationParameters.cpp
+    FEMAnimationParameters.h
     FEMAssembly.cpp
     FEMAssembly.h
+    FEMHole2PinFlangeJoint.cpp
+    FEMHole2PinFlangeJoint.h
+    FEMHolePinJoint.cpp
+    FEMHolePinJoint.h
     FEMItem.cpp
     FEMItem.h
     FEMJoint.cpp
@@ -35,16 +41,25 @@ set(MbDFEM_SRCS
     FEMPart.h
     FEMPart.pyi
     FEMPartPyImp.cpp
+    FEMSimulationParameters.cpp
+    FEMSimulationParameters.h
     FacePair.cpp
     FacePair.h
+    JointLoadUtils.h
     MbDAction.cpp
     MbDAction.h
+    MbDAnimationParameters.cpp
+    MbDAnimationParameters.h
     MbDAssembly.cpp
     MbDAssembly.h
     MbDAssembly.pyi
     MbDAssemblyPyImp.cpp
     MbDFolders.cpp
     MbDFolders.h
+    MbDGravity.cpp
+    MbDGravity.h
+    MbDGroundPart.cpp
+    MbDGroundPart.h
     MbDGroupUtils.cpp
     MbDGroupUtils.h
     MbDItemIJ.cpp
@@ -53,16 +68,12 @@ set(MbDFEM_SRCS
     MbDItemIJPyImp.cpp
     MbDJoint.cpp
     MbDJoint.h
-    MbDMassMarker.cpp
-    MbDMassMarker.h
     MbDMarker.cpp
     MbDMarker.h
+    MbDMassMarker.cpp
+    MbDMassMarker.h
     MbDMotion.cpp
     MbDMotion.h
-    MbDAnimationParameters.cpp
-    MbDAnimationParameters.h
-    MbDGravity.cpp
-    MbDGravity.h
     MbDPart.cpp
     MbDPart.h
     MbDPart.pyi

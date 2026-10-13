@@ -5,6 +5,13 @@
       "minor": 16,
       "patch": 3
     },
+    "buildPresets": [
+      {
+        "name": "windows-debug",
+        "configurePreset": "windows-debug",
+        "jobs": 4
+      }
+    ],
     "configurePresets": [
       {
         "name": "common",
@@ -40,23 +47,36 @@
           "CMAKE_BUILD_TYPE": {
             "type": "STRING",
             "value": "Debug"
-        },
-        "FREECAD_LIBPACK_DIR": {
-          "type": "PATH",
-          "value": "C:/Users/askoh/Documents/GitHub/FreeCAD/FreeCAD-LibPack/LibPack-26.3.0-v3.5.5-x64-Debug"
-        },
-        "FREECAD_COPY_LIBPACK_BIN_TO_BUILD": {
-          "type": "BOOL",
-          "value": "ON"
-        },
-        "FREECAD_COPY_DEPEND_DIRS_TO_BUILD": {
-          "type": "BOOL",
-          "value": "ON"
-        },
-        "FREECAD_COPY_PLUGINS_BIN_TO_BUILD": {
-          "type": "BOOL",
-          "value": "ON"
+          },
+          "FREECAD_COPY_LIBPACK_BIN_TO_BUILD": {
+            "type": "BOOL",
+            "value": "ON"
+          },
+          "FREECAD_COPY_DEPEND_DIRS_TO_BUILD": {
+            "type": "BOOL",
+            "value": "ON"
+          },
+          "FREECAD_COPY_PLUGINS_BIN_TO_BUILD": {
+            "type": "BOOL",
+            "value": "ON"
           }
+        }
+      },
+      {
+        "name": "windows-debug",
+        "displayName": "Windows Debug with MbDFEM",
+        "description": "MSVC/Ninja Debug build in build/debug; set FREECAD_LIBPACK_DIR or use tools/build-windows-debug.ps1",
+        "inherits": "debug",
+        "generator": "Ninja",
+        "condition": {
+          "type": "equals",
+          "lhs": "${hostSystemName}",
+          "rhs": "Windows"
+        },
+        "cacheVariables": {
+          "FREECAD_LIBPACK_USE": "ON",
+          "BUILD_MBDFEM": "ON",
+          "CMAKE_EXE_LINKER_FLAGS_DEBUG": "/debug /INCREMENTAL /STACK:12000000"
         }
       },
       {

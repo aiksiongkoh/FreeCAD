@@ -115,7 +115,7 @@ class AnimationController:
     def frame_rate(self):
         parameters = self._animation_parameters()
         value = getattr(parameters, "updateRate", 30) if parameters else 30
-        return max(float(value), 1.0)
+        return float(value)
 
     @property
     def playback_speed(self):
@@ -149,6 +149,9 @@ class AnimationController:
         sample = self._sample_for_time(self.current_time)
         self.current_frame = sample[3]
         self._apply_sample(sample)
+        parameters = self._animation_parameters()
+        if parameters is not None:
+            parameters.currentFrame = self.current_frame
         self._recompute_document()
         return self.current_time
 
@@ -178,7 +181,8 @@ class AnimationController:
 
     def play(self):
         """Start timer-driven playback when Qt is available."""
-        if self.frame_count == 0:
+        if self.frame_count == 0 or self.frame_rate == 0:
+            self.pause()
             return False
 
         self._prepare_free_body_diagram_scales()
@@ -189,18 +193,20 @@ class AnimationController:
             self.is_playing = True
             return False
 
-        interval = max(int(1000.0 / self.frame_rate), 1)
+        interval = max(int(1000.0 / abs(self.frame_rate)), 1)
         self.beginPlayback()
         timer.start(interval)
         return True
 
     def beginPlayback(self):
         if self.current_frame < self.start_frame or self.current_frame > self.end_frame:
-            self.setFrame(self.start_frame)
+            self.setFrame(self.end_frame if self.frame_rate < 0 else self.start_frame)
+        if self.frame_rate < 0 and self.current_frame == self.start_frame:
+            self.setFrame(self.end_frame)
         self.frames_skipped = 0
         self._last_tick_time = monotonic()
         self._frame_accumulator = 0.0
-        self.is_playing = True
+        self.is_playing = self.frame_rate != 0
 
     def pause(self):
         if self._timer is not None:
@@ -223,14 +229,18 @@ class AnimationController:
             delta_seconds = now - self._last_tick_time
             self._last_tick_time = now
 
-        self._frame_accumulator += max(float(delta_seconds), 0.0) * self.frame_rate
+        if self.frame_rate == 0:
+            self.pause()
+            return self.current_frame
+        self._frame_accumulator += max(float(delta_seconds), 0.0) * abs(self.frame_rate)
         frame_advance = int(self._frame_accumulator)
         if frame_advance <= 0:
             return self.current_frame
 
         self._frame_accumulator -= frame_advance
         previous_frame = self.current_frame
-        next_frame, should_pause = self._frame_after_advance(frame_advance)
+        next_frame, should_pause = self._frame_after_advance(
+            -frame_advance if self.frame_rate < 0 else frame_advance)
         self.frames_skipped = self._skipped_between_displayed_frames(previous_frame, next_frame)
         result = self.setFrame(next_frame)
         if should_pause:
@@ -279,12 +289,12 @@ class AnimationController:
                 raw_times = list(raw_times)
                 return [(index, float(raw_times[index])) for index in range(count)]
 
-        update_rate = self.frame_rate
+        update_rate = max(abs(self.frame_rate), 1.0)
         return [(index, index / update_rate) for index in range(count)]
 
     def _frame_after_advance(self, frame_advance):
         start, end = self.frame_bounds
-        if frame_advance <= 0 or end <= start:
+        if frame_advance == 0 or end <= start:
             return self.current_frame, False
 
         if self.loop_enabled:
@@ -292,15 +302,22 @@ class AnimationController:
             offset = (self.current_frame - start + frame_advance) % count
             return start + offset, False
 
-        available = max(end - self.current_frame, 0)
-        actual_advance = min(frame_advance, available)
+        direction = -1 if frame_advance < 0 else 1
+        available = max(self.current_frame - start if direction < 0
+                        else end - self.current_frame, 0)
+        actual_advance = min(abs(frame_advance), available)
         if actual_advance <= 0:
             return self.current_frame, True
-        return self.current_frame + actual_advance, frame_advance >= available
+        return self.current_frame + direction * actual_advance, abs(frame_advance) >= available
 
     def _skipped_between_displayed_frames(self, previous_frame, current_frame):
         if current_frame == previous_frame:
             return 0
+        if self.frame_rate < 0:
+            if current_frame < previous_frame:
+                return previous_frame - current_frame - 1
+            start, end = self.frame_bounds
+            return (previous_frame - start) + (end - current_frame) if self.loop_enabled else 0
 
         if current_frame > previous_frame:
             return current_frame - previous_frame - 1
@@ -428,6 +445,10 @@ class AnimationController:
         document = getattr(self.assembly, "Document", None)
         if document is not None:
             document.recompute()
+        if getattr(App, "GuiUp", False):
+            import FreeCADMbDFEMStateOverlay
+
+            FreeCADMbDFEMStateOverlay.update(self)
 
     def _update_free_body_diagrams(self, sample):
         try:

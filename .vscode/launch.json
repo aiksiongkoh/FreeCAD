@@ -5,9 +5,12 @@
             "name": "Debug MbDFEM",
             "type": "cppvsdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/build/mbdfem-debug/bin/FreeCAD_d.exe",
-            "cwd": "${workspaceFolder}/build/mbdfem-debug/bin",
-            "stopAtEntry": false
+            "program": "${workspaceFolder}/build/debug/bin/FreeCAD_d.exe",
+            "cwd": "${workspaceFolder}/build/debug/bin",
+            "stopAtEntry": false,
+            "environment": [{ "name": "PYTHONDONTWRITEBYTECODE", "value": "1" }],
+            "preLaunchTask": "MbDFEM: refresh scripts caches and C++",
+            "console": "integratedTerminal"
         },
         {
             "name": "Fast Debug FreeCAD",
@@ -44,6 +47,23 @@
             "console": "integratedTerminal"
         },
         {
+            "name": "Full Debug Script",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/debug/bin/FreeCAD_d.exe",
+            "args": ["${workspaceFolder}/data/examples/RealisticPendulum/startup.FCMacro"],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}/build/debug/bin",
+            "environment": [
+                {
+                    "name": "PYTHONDONTWRITEBYTECODE",
+                    "value": "1"
+                }
+            ],
+            "preLaunchTask": "MbDFEM: refresh scripts caches and C++",
+            "console": "integratedTerminal"
+        },
+        {
             "name": "Debug FreeCADCmd",
             "type": "cppvsdbg",
             "request": "launch",
@@ -52,6 +72,7 @@
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}/build/debug/bin",
             "environment": [],
+            "preLaunchTask": "MbDFEM: refresh scripts caches and C++",
             "console": "integratedTerminal"
         },
         {

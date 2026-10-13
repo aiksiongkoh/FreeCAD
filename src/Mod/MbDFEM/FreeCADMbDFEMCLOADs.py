@@ -420,8 +420,15 @@ class FEMPartCLOADDiagram:
         vectors = _diagram_vectors(self.fem_part, self.assembly, sample)
         scale = _diagram_scale(self.fem_part, self.assembly, vectors)
         self._ensure_arrows(len(vectors))
+        shape, placement = _arrow_body_geometry(self.fem_part, sample)
         for arrow, vector in zip(self.arrows, vectors):
-            arrow.update(vector.origin, vector.value, scale, _CLOAD_COLOR)
+            if vector.cylinder is not None:
+                origin, arrow_scale = _cylindrical_cload_arrow(
+                    vector.cylinder, placement, vector.origin, vector.value, scale)
+            else:
+                origin, arrow_scale = _outside_cload_arrow(
+                    shape, placement, vector.origin, vector.value, scale)
+            arrow.update(origin, vector.value, arrow_scale, _CLOAD_COLOR)
         for arrow in self.arrows[len(vectors) :]:
             arrow.hide()
 
@@ -436,10 +443,120 @@ class FEMPartCLOADDiagram:
             self.root.addChild(arrow.root)
 
 
+def _arrow_body_geometry(fem_part, sample):
+    """Return the undeformed solid in the same local frame as the mesh nodes."""
+    part = getattr(fem_part, "mbdItem", None)
+    shape = getattr(part, "Shape", None)
+    if shape is None or shape.isNull():
+        return None, App.Placement()
+    shape = shape.copy()
+    shape.Placement = App.Placement()
+    return shape, _mesh_placement_at_sample(fem_part, sample)
+
+
+def _outside_cload_arrow(shape, placement, origin, value, scale):
+    """Keep the force direction, anchoring either end on the body's surface.
+
+    Choose the side with more space before the first obstruction. Keep the
+    full scaled length even when the arrow crosses another surface; the user
+    can reveal obscured portions with body transparency.
+    """
+    length = value.Length * scale
+    if shape is None or length <= _ZERO_TOLERANCE:
+        return origin, scale
+    import Part
+
+    inverse = placement.inverse()
+    contact = inverse.multVec(origin)
+    direction = inverse.Rotation.multVec(value)
+    direction.normalize()
+    tolerance = 1.0e-7
+    # Curved mesh facets can place a node slightly beneath the CAD surface.
+    if shape.isInside(contact, tolerance, False):
+        _distance, closest, _info = shape.distToShape(Part.Vertex(contact))
+        contact = closest[0][0]
+    line = Part.Line(contact, contact + direction)
+    cuts = [-length, 0.0, length]
+    try:
+        # Untrimmed surface intersections can add extra cuts, but cannot miss
+        # a solid boundary. Midpoint classification handles the trimmed faces.
+        for face in shape.Faces:
+            points, _curves = face.Surface.intersect(line)
+            cuts.extend(max(-length, min(length,
+                        (App.Vector(p.X, p.Y, p.Z) - contact).dot(direction)))
+                        for p in points)
+    except (AttributeError, RuntimeError, TypeError):
+        segment = Part.makeLine(contact - direction * length, contact + direction * length)
+        cuts.extend(max(-length, min(length, (v.Point - contact).dot(direction)))
+                    for v in shape.section(segment).Vertexes)
+    cuts = sorted(set(cuts))
+    available = {1: length, -1: length}
+    for left, right in zip(cuts, cuts[1:]):
+        if right - left <= tolerance:
+            continue
+        midpoint = (left + right) * 0.5
+        if shape.isInside(contact + direction * midpoint, tolerance, False):
+            sign = 1 if midpoint > 0 else -1
+            available[sign] = min(available[sign], max(0.0, left if sign == 1 else -right))
+    sign = 1 if available[1] >= available[-1] else -1
+    tail = contact if sign == 1 else contact - direction * length
+    return placement.multVec(tail), scale
+
+
+def _cylindrical_cload_arrow(cylinder, placement, origin, value, scale):
+    """Anchor using the contact cylinder alone, including at its end rims."""
+    inverse = placement.inverse()
+    contact = inverse.multVec(origin)
+    relative = contact - cylinder["origin"]
+    axis = cylinder["axis"]
+    axial = axis * relative.dot(axis)
+    radial = relative - axial
+    if radial.Length <= 1.0e-12:
+        return origin, scale
+    radial.normalize()
+    contact = cylinder["origin"] + axial + radial * cylinder["radius"]
+    force = inverse.Rotation.multVec(value)
+    radial_force = force.dot(radial)
+    # Material is inside a pin cylinder and outside a hole cylinder.
+    # Ignore end planes and shoulders; a tangent or axial force uses the tail.
+    into_material = radial_force > 1.0e-12 if cylinder["role"] == "hole" else radial_force < -1.0e-12
+    tail = contact - force * scale if into_material else contact
+    return placement.multVec(tail), scale
+
+
+def _cylindrical_node_geometry(fem_part, nodes):
+    """Associate mesh nodes with the selected CylCylFacePair's local cylinder."""
+    part = getattr(fem_part, "mbdItem", None)
+    shape = getattr(part, "Shape", None)
+    if shape is None or shape.isNull():
+        return {}
+    shape = shape.copy()
+    shape.Placement = App.Placement()
+    cylinders = {}
+    for joint, _marker, _sign in FreeCADMbDFEMEmbedded._part_joints_for_fem_part(fem_part):
+        for pair in FreeCADMbDFEMEmbedded._joint_face_pairs(joint):
+            if pair.get("type") != "CylCyl":
+                continue
+            side = FreeCADMbDFEMEmbedded._face_pair_side_for_part(pair, part)
+            if side is None:
+                continue
+            face = shape.Faces[int(pair["subName" + side][4:]) - 1]
+            reference = FreeCADMbDFEMEmbedded._cylindrical_face_reference(face)
+            if reference is None:
+                continue
+            reference["role"] = pair["role" + side]
+            ids = FreeCADMbDFEMEmbedded._cylindrical_surface_node_ids(
+                reference, nodes, reference["origin"], reference["axis"])
+            for node in ids:
+                cylinders[node] = reference
+    return cylinders
+
+
 class _DiagramVector:
-    def __init__(self, origin, value):
+    def __init__(self, origin, value, cylinder=None):
         self.origin = origin
         self.value = value
+        self.cylinder = cylinder
 
 
 def _diagram_vectors(fem_part, assembly, sample=None):
@@ -452,68 +569,31 @@ def _diagram_vectors(fem_part, assembly, sample=None):
     if inp_vectors is not None:
         return inp_vectors
 
-    for load in _mbd_joint_cylindrical_hole_loads(fem_part, assembly, sample):
+    loads = list(_mbd_joint_cylindrical_hole_loads(fem_part, assembly, sample))
+    mesh_nodes = {}
+    if any(load.get("nodes") is None for load in loads):
+        mesh_nodes = FreeCADMbDFEMEmbedded._fem_mesh_nodes(getattr(fem_part, "mesh", None))
+    for load in loads:
+        mesh_nodes.update(load.get("nodes") or {})
+    cylinders = _cylindrical_node_geometry(fem_part, mesh_nodes)
+    for load in loads:
         nodes = load.get("nodes")
         if nodes is None:
-            nodes = FreeCADMbDFEMEmbedded._fem_mesh_nodes(getattr(fem_part, "mesh", None))
-        if "cload_components" in load:
-            for records in load["cload_components"].values():
-                component_vectors = {}
-                for node_id, dof, value in records:
-                    vector = component_vectors.setdefault(node_id, App.Vector())
-                    vector[dof - 1] += value
-                for node_id, vector in component_vectors.items():
-                    if node_id in nodes and vector.Length > _ZERO_TOLERANCE:
-                        vectors.append(_DiagramVector(
-                            _global_point(placement, nodes[node_id]),
-                            _global_vector(placement, vector),
-                        ))
-            continue
-        axial_vectors = {}
-        for node_id, dof, value in (load.get("torque_axis_load") or {}).get("cloads", []):
-            local_vector = axial_vectors.setdefault(node_id, App.Vector())
-            local_vector[dof - 1] += value
-        for node_id, local_vector in axial_vectors.items():
-            if node_id in nodes and local_vector.Length > _ZERO_TOLERANCE:
-                vectors.append(_DiagramVector(
-                    _global_point(placement, nodes[node_id]),
-                    _global_vector(placement, local_vector),
-                ))
-        cloads = load.get("cloads") or []
-        if cloads:
-            nodal_vectors = {}
-            for node_id, dof, value in cloads:
-                local_vector = nodal_vectors.setdefault(int(node_id), App.Vector())
-                if dof == 1:
-                    local_vector.x += value
-                elif dof == 2:
-                    local_vector.y += value
-                elif dof == 3:
-                    local_vector.z += value
-            for node_id in sorted(nodal_vectors):
-                local_vector = nodal_vectors[node_id]
-                if node_id not in nodes or local_vector.Length <= _ZERO_TOLERANCE:
-                    continue
-                vectors.append(
-                    _DiagramVector(
+            nodes = mesh_nodes
+        components = load.get("cload_components")
+        records_by_component = components.values() if components is not None else [load.get("cloads", [])]
+        for records in records_by_component:
+            component_vectors = {}
+            for node_id, dof, value in records:
+                vector = component_vectors.setdefault(node_id, App.Vector())
+                vector[dof - 1] += value
+            for node_id, vector in component_vectors.items():
+                if node_id in nodes and vector.Length > _ZERO_TOLERANCE:
+                    vectors.append(_DiagramVector(
                         _global_point(placement, nodes[node_id]),
-                        _global_vector(placement, local_vector),
-                    )
-                )
-            continue
-
-        x_axis = load["x_axis"]
-        for name in ("U1", "U4", "L1", "L4"):
-            for node_id in load.get("octants", {}).get(name, []):
-                if name not in load.get("nodal_values", {}):
-                    continue
-                value = FreeCADMbDFEMEmbedded._joint_side_force_node_value(load, name, node_id)
-                local_vector = x_axis * value
-                if local_vector.Length <= _ZERO_TOLERANCE:
-                    continue
-                origin = _global_point(placement, nodes[node_id])
-                vector = _global_vector(placement, local_vector)
-                vectors.append(_DiagramVector(origin, vector))
+                        _global_vector(placement, vector),
+                        cylinders.get(node_id) if load.get("face_pair_type") == "CylCyl" else None,
+                    ))
     return vectors
 
 
@@ -539,11 +619,12 @@ def _diagram_vectors_from_matching_inp(fem_part, sample, placement):
     if not _matching_cload_frame_metadata(inp_file_name, mesh_signature):
         return None
 
-    nodal_vectors = _cload_vectors_from_inp_content(content, separate=True)
+    nodal_vectors, load_types = _cload_vectors_from_inp_content(content, separate=True, with_types=True)
     if not nodal_vectors:
         return None
 
     vectors = []
+    cylinders = _cylindrical_node_geometry(fem_part, nodes)
     for key in sorted(nodal_vectors):
         node_id = key[1]
         if node_id not in nodes:
@@ -553,7 +634,8 @@ def _diagram_vectors_from_matching_inp(fem_part, sample, placement):
             continue
         origin = _global_point(placement, nodes[node_id])
         vector = _global_vector(placement, local_vector)
-        vectors.append(_DiagramVector(origin, vector))
+        vectors.append(_DiagramVector(
+            origin, vector, cylinders.get(node_id) if load_types[key] == "CylCyl" else None))
     return vectors
 
 
@@ -585,28 +667,32 @@ def _matching_cload_frame_metadata(inp_file_name, mesh_signature):
     return not source or source == os.path.basename(inp_file_name)
 
 
-def _cload_vectors_from_inp_content(content, separate=False):
+def _cload_vectors_from_inp_content(content, separate=False, with_types=False):
     markers = [
         FreeCADMbDFEMEmbedded._MBD_JOINT_CLOAD_MARKER.strip(),
         FreeCADMbDFEMEmbedded._MBD_LEGACY_JOINT_CYLINDER_LOAD_MARKER.strip(),
     ]
     marker_at = max(content.rfind(marker) for marker in markers)
     if marker_at < 0:
-        return {}
+        return ({}, {}) if with_types else {}
 
     vectors = {}
+    load_types = {}
+    load_type = "CylCyl"
     component = 0
     in_cload = False
     for raw_line in content[marker_at:].splitlines():
         line = raw_line.strip()
         if line.startswith("** MbDFEM "):
             component += 1
+            load_type = "AnnuAnnu" if "annular combined" in line else "CylCyl"
         if not line or line.startswith("**"):
             continue
         if line.startswith("*"):
             in_cload = line.upper().startswith("*CLOAD")
             if in_cload:
                 component += 1
+                load_type = "CylCyl"
             continue
         if not in_cload:
             continue
@@ -622,6 +708,7 @@ def _cload_vectors_from_inp_content(content, separate=False):
         if dof < 1 or dof > 3:
             continue
         key = (component, node_id) if separate else node_id
+        load_types[key] = load_type
         vector = vectors.setdefault(key, App.Vector())
         if dof == 1:
             vector.x += value
@@ -629,7 +716,7 @@ def _cload_vectors_from_inp_content(content, separate=False):
             vector.y += value
         else:
             vector.z += value
-    return vectors
+    return (vectors, load_types) if with_types else vectors
 
 
 def _mbd_joint_cylindrical_hole_loads(fem_part, assembly, sample):
@@ -640,29 +727,11 @@ def _mbd_joint_cylindrical_hole_loads(fem_part, assembly, sample):
         return []
 
     loads = []
-    placement = _mesh_placement_at_sample(fem_part, sample)
-    for joint, _marker, sign in FreeCADMbDFEMEmbedded._part_joints_for_mbd_part(mbd_part, assembly):
-        force = placement.Rotation.inverted().multVec(_sample_joint_force(joint, sample) * sign)
-        torque = placement.Rotation.inverted().multVec(
-            FreeCADMbDFreeBodyDiagram._sample_vector(
-                joint, ("txs", "tys", "tzs"), sample or (0, 0, 0.0, 0)
-            ) * sign
-        )
-        force_origin = FreeCADMbDFEMEmbedded._joint_force_origin_in_fem_part(joint, fem_part)
-        source_part = FreeCADMbDFEMEmbedded._mbd_part_containing_marker(getattr(joint, "markerI", None))
-        if sample is not None and source_part is not None:
-            source_placement = FreeCADMbDFreeBodyDiagram._placement_at_sample(source_part, sample)
-            target_placement = FreeCADMbDFreeBodyDiagram._placement_at_sample(mbd_part, sample)
-            force_origin = target_placement.inverse().multVec(
-                source_placement.multVec(joint.markerI.Placement.Base)
-            )
+    for joint, _marker, _sign in FreeCADMbDFEMEmbedded._part_joints_for_fem_part(fem_part):
         for load in FreeCADMbDFEMEmbedded._joint_loads_for_fem_part(
             joint,
             mbd_part,
             nodes,
-            force,
-            torque,
-            force_origin=force_origin,
             sample=sample,
         ):
             load["nodes"] = nodes
@@ -719,15 +788,24 @@ def _mbd_joint_cylindrical_face_regions(fem_part, assembly):
         return []
 
     regions = []
-    for joint, marker, sign in FreeCADMbDFEMEmbedded._part_joints_for_mbd_part(
-        mbd_part,
-        assembly,
-    ):
+    for joint, marker, sign in FreeCADMbDFEMEmbedded._part_joints_for_fem_part(fem_part):
         for face_pair in FreeCADMbDFEMEmbedded._joint_face_pairs(joint):
-            if face_pair.get("type") != "CylCyl":
+            if face_pair.get("type") not in ("CylCyl", "AnnuAnnu"):
                 continue
             side = FreeCADMbDFEMEmbedded._face_pair_side_for_part(face_pair, mbd_part)
             if side is None:
+                continue
+            if face_pair.get("type") == "AnnuAnnu":
+                import MbDFEM
+
+                load = MbDFEM.annuAnnuFaceLoad(
+                    face_pair["object"], mbd_part, list(sorted(nodes.items())),
+                    App.Vector(), App.Vector(), App.Vector(),
+                )
+                node_ids = sorted(node for ids in load["force_quadrants"].values() for node in ids)
+                if node_ids:
+                    regions.append({"joint": joint, "face_pair": face_pair,
+                                    "surface_node_ids": node_ids})
                 continue
             reference = FreeCADMbDFEMEmbedded._cylindrical_face_reference(
                 face_pair.get("face{}".format(side))
@@ -853,12 +931,6 @@ def _fem_part_visible(fem_part):
     return bool(getattr(fem_part, "Visibility", True))
 
 
-def _sample_joint_force(joint, sample):
-    if sample is None:
-        sample = (0, 0, 0.0, 0)
-    return FreeCADMbDFreeBodyDiagram._sample_vector(joint, ("fxs", "fys", "fzs"), sample)
-
-
 def _mesh_placement_at_sample(fem_part, sample):
     mbd_part = getattr(fem_part, "mbdItem", None)
     if mbd_part is not None and sample is not None and _has_sampled_placement(mbd_part):
@@ -866,12 +938,12 @@ def _mesh_placement_at_sample(fem_part, sample):
 
     mesh_object = getattr(fem_part, "mesh", None)
     try:
-        return mesh_object.getGlobalPlacement()
+        return FreeCADMbDFreeBodyDiagram._global_placement(mesh_object)
     except Exception:
         pass
 
     try:
-        return fem_part.getGlobalPlacement()
+        return FreeCADMbDFreeBodyDiagram._global_placement(fem_part)
     except Exception:
         return App.Placement(fem_part.Placement)
 

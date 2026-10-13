@@ -9,6 +9,8 @@
 #include <App/DocumentObjectGroup.h>
 
 #include "MbDAssembly.h"
+#include "FEMAnimationParameters.h"
+#include "FEMSimulationParameters.h"
 
 PROPERTY_SOURCE(MbDFEM::FEMAssembly, App::Part)
 
@@ -17,7 +19,7 @@ namespace
 
 struct FEMAssemblyCategory
 {
-    App::PropertyLinkList MbDFEM::FEMAssembly::*children;
+    App::PropertyLinkList MbDFEM::FEMAssembly::* children;
     App::DocumentObjectGroup* (MbDFEM::FEMAssembly::*getFolder)() const;
 };
 
@@ -28,8 +30,10 @@ constexpr std::array<FEMAssemblyCategory, 4> femAssemblyCategories = {{
     {&MbDFEM::FEMAssembly::actions, &MbDFEM::FEMAssembly::getActionsFolder},
 }};
 
-App::DocumentObjectGroup* getFolder(const MbDFEM::FEMAssembly* assembly,
-                                    const FEMAssemblyCategory& category)
+App::DocumentObjectGroup* getFolder(
+    const MbDFEM::FEMAssembly* assembly,
+    const FEMAssemblyCategory& category
+)
 {
     return assembly ? (assembly->*(category.getFolder))() : nullptr;
 }
@@ -41,9 +45,11 @@ void addToAssemblyGroup(MbDFEM::FEMAssembly* assembly, App::DocumentObjectGroup*
     }
 }
 
-App::DocumentObjectGroup* matchingFolder(const char* subname,
-                                         const char*& rest,
-                                         const MbDFEM::FEMAssembly* assembly)
+App::DocumentObjectGroup* matchingFolder(
+    const char* subname,
+    const char*& rest,
+    const MbDFEM::FEMAssembly* assembly
+)
 {
     rest = nullptr;
     const char* dot = subname ? std::strchr(subname, '.') : nullptr;
@@ -62,8 +68,7 @@ App::DocumentObjectGroup* matchingFolder(const char* subname,
     return nullptr;
 }
 
-App::DocumentObject* findDirectChildByInternalName(const char* element,
-                                                   const MbDFEM::FEMAssembly* assembly)
+App::DocumentObject* findDirectChildByInternalName(const char* element, const MbDFEM::FEMAssembly* assembly)
 {
     if (!element || !*element) {
         return nullptr;
@@ -85,9 +90,11 @@ App::DocumentObject* findDirectChildByInternalName(const char* element,
     return nullptr;
 }
 
-App::DocumentObject* matchingDirectChild(const char* subname,
-                                         const char*& rest,
-                                         const MbDFEM::FEMAssembly* assembly)
+App::DocumentObject* matchingDirectChild(
+    const char* subname,
+    const char*& rest,
+    const MbDFEM::FEMAssembly* assembly
+)
 {
     rest = nullptr;
     const char* dot = subname ? std::strchr(subname, '.') : nullptr;
@@ -107,66 +114,102 @@ App::DocumentObject* matchingDirectChild(const char* subname,
 
 MbDFEM::FEMAssembly::FEMAssembly()
 {
-    ADD_PROPERTY_TYPE(mbdItem,
-                      (nullptr),
-                      "MbDFEM",
-                      App::Prop_None,
-                      "Multibody assembly represented by this FEM assembly");
+    ADD_PROPERTY_TYPE(
+        mbdItem,
+        (nullptr),
+        "MbDFEM",
+        App::Prop_None,
+        "Multibody assembly represented by this FEM assembly"
+    );
     mbdItem.setScope(App::LinkScope::Global);
-    ADD_PROPERTY_TYPE(parts,
-                      (nullptr),
-                      "MbDFEM",
-                      App::Prop_None,
-                      "FEM parts belonging to this assembly");
+    ADD_PROPERTY_TYPE(parts, (nullptr), "MbDFEM", App::Prop_None, "FEM parts belonging to this assembly");
     parts.setScope(App::LinkScope::Child);
-    ADD_PROPERTY_TYPE(joints,
-                      (nullptr),
-                      "MbDFEM",
-                      App::Prop_None,
-                      "FEM joints belonging to this assembly");
+    ADD_PROPERTY_TYPE(joints, (nullptr), "MbDFEM", App::Prop_None, "FEM joints belonging to this assembly");
     joints.setScope(App::LinkScope::Child);
-    ADD_PROPERTY_TYPE(motions,
-                      (nullptr),
-                      "MbDFEM",
-                      App::Prop_None,
-                      "FEM motions belonging to this assembly");
+    ADD_PROPERTY_TYPE(motions, (nullptr), "MbDFEM", App::Prop_None, "FEM motions belonging to this assembly");
     motions.setScope(App::LinkScope::Child);
-    ADD_PROPERTY_TYPE(actions,
-                      (nullptr),
-                      "MbDFEM",
-                      App::Prop_None,
-                      "FEM actions belonging to this assembly");
+    ADD_PROPERTY_TYPE(actions, (nullptr), "MbDFEM", App::Prop_None, "FEM actions belonging to this assembly");
     actions.setScope(App::LinkScope::Child);
-    ADD_PROPERTY_TYPE(femParameters,
-                      (nullptr),
-                      "MbDFEM",
-                      App::Prop_None,
-                      "FEM parameters for this assembly");
+    ADD_PROPERTY_TYPE(femParameters, (nullptr), "MbDFEM", App::Prop_None, "FEM parameters for this assembly");
     femParameters.setScope(App::LinkScope::Child);
-    ADD_PROPERTY_TYPE(_partsFolder,
-                      (nullptr),
-                      "MbDFEM",
-                      App::Prop_Hidden,
-                      "Tree folder containing this assembly's FEM parts");
+    ADD_PROPERTY_TYPE(
+        animationParameters,
+        (nullptr),
+        "MbDFEM",
+        App::Prop_None,
+        "Saved settings for synchronized FEM result animation"
+    );
+    animationParameters.setScope(App::LinkScope::Child);
+    ADD_PROPERTY_TYPE(
+        _partsFolder,
+        (nullptr),
+        "MbDFEM",
+        App::Prop_Hidden,
+        "Tree folder containing this assembly's FEM parts"
+    );
     _partsFolder.setScope(App::LinkScope::Hidden);
-    ADD_PROPERTY_TYPE(_jointsFolder,
-                      (nullptr),
-                      "MbDFEM",
-                      App::Prop_Hidden,
-                      "Tree folder containing this assembly's FEM joints");
+    ADD_PROPERTY_TYPE(
+        _jointsFolder,
+        (nullptr),
+        "MbDFEM",
+        App::Prop_Hidden,
+        "Tree folder containing this assembly's FEM joints"
+    );
     _jointsFolder.setScope(App::LinkScope::Hidden);
-    ADD_PROPERTY_TYPE(_motionsFolder,
-                      (nullptr),
-                      "MbDFEM",
-                      App::Prop_Hidden,
-                      "Tree folder containing this assembly's FEM motions");
+    ADD_PROPERTY_TYPE(
+        _motionsFolder,
+        (nullptr),
+        "MbDFEM",
+        App::Prop_Hidden,
+        "Tree folder containing this assembly's FEM motions"
+    );
     _motionsFolder.setScope(App::LinkScope::Hidden);
-    ADD_PROPERTY_TYPE(_actionsFolder,
-                      (nullptr),
-                      "MbDFEM",
-                      App::Prop_Hidden,
-                      "Tree folder containing this assembly's FEM actions");
+    ADD_PROPERTY_TYPE(
+        _actionsFolder,
+        (nullptr),
+        "MbDFEM",
+        App::Prop_Hidden,
+        "Tree folder containing this assembly's FEM actions"
+    );
     _actionsFolder.setScope(App::LinkScope::Hidden);
+}
+
+void MbDFEM::FEMAssembly::ensureParameterObjects()
+{
+    auto* document = getDocument();
+    if (!document) {
+        return;
+    }
+
+    if (!femParameters.getValue()) {
+        const std::string name = std::string(getNameInDocument()) + "_SimulationParameters";
+        auto* parameters = document->addObject("MbDFEM::FEMSimulationParameters", name.c_str());
+        parameters->Label.setValue("SimulationParameters");
+        femParameters.setValue(parameters);
+    }
+    if (!animationParameters.getValue()) {
+        const std::string name = std::string(getNameInDocument()) + "_AnimationParameters";
+        auto* parameters = document->addObject("MbDFEM::FEMAnimationParameters", name.c_str());
+        parameters->Label.setValue("AnimationParameters");
+        animationParameters.setValue(parameters);
+    }
+    for (auto* parameters : {femParameters.getValue(), animationParameters.getValue()}) {
+        if (!hasObject(parameters)) {
+            addObject(parameters);
+        }
+    }
+}
+
+void MbDFEM::FEMAssembly::setupObject()
+{
+    App::Part::setupObject();
+    ensureParameterObjects();
+}
+
+void MbDFEM::FEMAssembly::onDocumentRestored()
+{
+    App::Part::onDocumentRestored();
+    ensureParameterObjects();
 }
 
 App::DocumentObjectGroup* MbDFEM::FEMAssembly::getPartsFolder() const
@@ -192,7 +235,8 @@ App::DocumentObjectGroup* MbDFEM::FEMAssembly::getActionsFolder() const
 std::vector<App::DocumentObjectGroup*> MbDFEM::FEMAssembly::getCategoryFolders() const
 {
     std::vector<App::DocumentObjectGroup*> folders;
-    for (auto* folder : {getPartsFolder(), getJointsFolder(), getMotionsFolder(), getActionsFolder()}) {
+    for (auto* folder :
+         {getPartsFolder(), getJointsFolder(), getMotionsFolder(), getActionsFolder()}) {
         if (folder) {
             folders.push_back(folder);
         }
@@ -221,7 +265,8 @@ App::DocumentObjectGroup* MbDFEM::FEMAssembly::ensurePartsFolder()
 
     const std::string name = std::string(getNameInDocument()) + "_Parts";
     auto* folder = static_cast<App::DocumentObjectGroup*>(
-        getDocument()->addObject("MbDFEM::FEMPartsFolder", name.c_str()));
+        getDocument()->addObject("MbDFEM::FEMPartsFolder", name.c_str())
+    );
     folder->Label.setValue("Parts");
     _partsFolder.setValue(folder);
     addToAssemblyGroup(this, folder);
@@ -239,7 +284,8 @@ App::DocumentObjectGroup* MbDFEM::FEMAssembly::ensureJointsFolder()
 
     const std::string name = std::string(getNameInDocument()) + "_Joints";
     auto* folder = static_cast<App::DocumentObjectGroup*>(
-        getDocument()->addObject("MbDFEM::FEMJointsFolder", name.c_str()));
+        getDocument()->addObject("MbDFEM::FEMJointsFolder", name.c_str())
+    );
     folder->Label.setValue("Joints");
     _jointsFolder.setValue(folder);
     addToAssemblyGroup(this, folder);
@@ -257,7 +303,8 @@ App::DocumentObjectGroup* MbDFEM::FEMAssembly::ensureMotionsFolder()
 
     const std::string name = std::string(getNameInDocument()) + "_Motions";
     auto* folder = static_cast<App::DocumentObjectGroup*>(
-        getDocument()->addObject("MbDFEM::FEMMotionsFolder", name.c_str()));
+        getDocument()->addObject("MbDFEM::FEMMotionsFolder", name.c_str())
+    );
     folder->Label.setValue("Motions");
     _motionsFolder.setValue(folder);
     addToAssemblyGroup(this, folder);
@@ -275,7 +322,8 @@ App::DocumentObjectGroup* MbDFEM::FEMAssembly::ensureActionsFolder()
 
     const std::string name = std::string(getNameInDocument()) + "_Actions";
     auto* folder = static_cast<App::DocumentObjectGroup*>(
-        getDocument()->addObject("MbDFEM::FEMActionsFolder", name.c_str()));
+        getDocument()->addObject("MbDFEM::FEMActionsFolder", name.c_str())
+    );
     folder->Label.setValue("Actions");
     _actionsFolder.setValue(folder);
     addToAssemblyGroup(this, folder);
@@ -327,11 +375,13 @@ int MbDFEM::FEMAssembly::isElementVisible(const char* element) const
     return child->Visibility.getValue() ? 1 : 0;
 }
 
-App::DocumentObject* MbDFEM::FEMAssembly::getSubObject(const char* subname,
-                                                       PyObject** pyObj,
-                                                       Base::Matrix4D* mat,
-                                                       bool transform,
-                                                       int depth) const
+App::DocumentObject* MbDFEM::FEMAssembly::getSubObject(
+    const char* subname,
+    PyObject** pyObj,
+    Base::Matrix4D* mat,
+    bool transform,
+    int depth
+) const
 {
     const char* rest = nullptr;
     auto* folder = matchingFolder(subname, rest, this);

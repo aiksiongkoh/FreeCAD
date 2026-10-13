@@ -110,16 +110,20 @@ Base::Placement placementOf(const App::DocumentObject* obj)
 std::vector<double> positionValues(const Base::Placement& placement)
 {
     const auto& pos = placement.getPosition();
-    return {pos.x * documentLengthToSiLength,
-            pos.y * documentLengthToSiLength,
-            pos.z * documentLengthToSiLength};
+    return {
+        pos.x * documentLengthToSiLength,
+        pos.y * documentLengthToSiLength,
+        pos.z * documentLengthToSiLength
+    };
 }
 
 std::vector<double> velocityValues(const Base::Vector3d& velocity)
 {
-    return {velocity.x * documentLengthToSiLength,
-            velocity.y * documentLengthToSiLength,
-            velocity.z * documentLengthToSiLength};
+    return {
+        velocity.x * documentLengthToSiLength,
+        velocity.y * documentLengthToSiLength,
+        velocity.z * documentLengthToSiLength
+    };
 }
 
 std::vector<double> vectorValues(const Base::Vector3d& vector)
@@ -163,11 +167,15 @@ void writePartKinematics(Writer& writer, int level, const MbDFEM::MbDPart* part)
 {
     writeSpatialItem(writer, level, part);
     writer.line(level, "Velocity3D");
-    writer.vector(level + 1, part ? velocityValues(part->velocity.getValue())
-                                  : std::vector<double> {0.0, 0.0, 0.0});
+    writer.vector(
+        level + 1,
+        part ? velocityValues(part->velocity.getValue()) : std::vector<double> {0.0, 0.0, 0.0}
+    );
     writer.line(level, "Omega3D");
-    writer.vector(level + 1, part ? vectorValues(part->omega.getValue())
-                                  : std::vector<double> {0.0, 0.0, 0.0});
+    writer.vector(
+        level + 1,
+        part ? vectorValues(part->omega.getValue()) : std::vector<double> {0.0, 0.0, 0.0}
+    );
 }
 
 void writeAssemblyKinematics(Writer& writer, int level)
@@ -209,8 +217,8 @@ void writePrincipalMassMarker(Writer& writer, int level, const MbDFEM::MbDPart* 
     writePlacement(writer, level + 1, placementOf(massMarker));
     writer.keyValue(level + 1, "Mass", number(massMarker ? massMarker->mass.getValue() : 1.0));
     writer.line(level + 1, "MomentOfInertias");
-    const Base::Vector3d inertias =
-        massMarker ? massMarker->principalInertias.getValue() : Base::Vector3d(1.0, 1.0, 1.0);
+    const Base::Vector3d inertias = massMarker ? massMarker->principalInertias.getValue()
+                                               : Base::Vector3d(1.0, 1.0, 1.0);
     writer.vector(level + 2, {inertias.x, inertias.y, inertias.z});
     writer.keyValue(level + 1, "Density", number(massMarker ? massMarker->densityInKgPerM3() : 1.0e9));
 }
@@ -395,10 +403,12 @@ void writeGravity(Writer& writer, MbDFEM::MbDAssembly* assembly)
     writer.line(1, "ConstantGravity");
     if (auto* gravity = assembly->getGravity()) {
         const auto value = gravity->gravity.getValue();
-        writer.vector(2,
-                      {value.x * documentLengthToSiLength,
-                       value.y * documentLengthToSiLength,
-                       value.z * documentLengthToSiLength});
+        writer.vector(
+            2,
+            {value.x * documentLengthToSiLength,
+             value.y * documentLengthToSiLength,
+             value.z * documentLengthToSiLength}
+        );
     }
     else {
         writer.vector(2, {0.0, 0.0, -9.81});
@@ -427,7 +437,7 @@ void writeSimulationParameters(Writer& writer, MbDFEM::MbDAssembly* assembly)
 void writeAnimationParameters(Writer& writer, MbDFEM::MbDAssembly* assembly)
 {
     auto* parameters = assembly->getAnimationParameters();
-    const int updateRate = parameters ? parameters->updateRate.getValue() : 30;
+    const double updateRate = parameters ? parameters->updateRate.getValue() : 30.0;
     const int startFrame = parameters ? parameters->startFrame.getValue() : 1;
     const int endFrame = parameters ? parameters->endFrame.getValue() : -1;
 
@@ -437,7 +447,7 @@ void writeAnimationParameters(Writer& writer, MbDFEM::MbDAssembly* assembly)
     writer.keyValue(2, "istart", std::to_string(std::max(startFrame, 0) + 1));
     writer.keyValue(2, "iend", endFrame >= 0 ? std::to_string(endFrame + 1) : "1000000");
     writer.keyValue(2, "isForward", "true");
-    writer.keyValue(2, "framesPerSecond", std::to_string(updateRate));
+    writer.keyValue(2, "framesPerSecond", number(updateRate));
 }
 
 std::vector<std::string> fields(const std::string& line)
@@ -552,8 +562,10 @@ ResultProperty resultProperty(App::DocumentObject* object, const std::string& ke
     if (it == properties.end() || !object) {
         return {};
     }
-    return {freecad_cast<App::PropertyFloatList*>(object->getPropertyByName(it->second.name)),
-            it->second.scale};
+    return {
+        freecad_cast<App::PropertyFloatList*>(object->getPropertyByName(it->second.name)),
+        it->second.scale
+    };
 }
 
 struct SeriesAssignment
@@ -711,10 +723,12 @@ std::vector<App::DocumentObject*> MbDFEM::importSolvedAsmt(
 
         const auto result = resultProperty(currentObject, keyword);
         if (result.property) {
-            assignments.push_back({currentObject,
-                                   result.property,
-                                   result.property->getName(),
-                                   scaledValues(seriesValues(tokens), result.scale)});
+            assignments.push_back(
+                {currentObject,
+                 result.property,
+                 result.property->getName(),
+                 scaledValues(seriesValues(tokens), result.scale)}
+            );
         }
     }
 

@@ -1,0 +1,27 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "MbDFEM: configure Windows Debug",
+            "type": "process",
+            "command": "powershell.exe",
+            "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/tools/build-windows-debug.ps1", "-Action", "Configure"],
+            "problemMatcher": []
+        },
+        {
+            "label": "MbDFEM: refresh scripts and caches",
+            "type": "process",
+            "command": "powershell.exe",
+            "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/tools/build-windows-debug.ps1", "-Action", "Scripts"],
+            "problemMatcher": []
+        },
+        {
+            "label": "MbDFEM: refresh scripts caches and C++",
+            "type": "process",
+            "command": "powershell.exe",
+            "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/tools/build-windows-debug.ps1", "-Action", "Build"],
+            "group": { "kind": "build", "isDefault": true },
+            "problemMatcher": "$msCompile"
+        }
+    ]
+}

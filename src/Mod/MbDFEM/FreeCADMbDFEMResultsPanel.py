@@ -469,6 +469,24 @@ def _solved_frd_scalar_ranges(fem_part, field_name):
     return ranges
 
 
+def _state_pipeline_scalar_range(fem_part, field_name, state_index):
+    result = _result_for_state(fem_part, state_index)
+    value_range = (
+        _scaled_min_max(_result_scalar_values(result, field_name), field_name)
+        if result is not None else None
+    )
+    if value_range is None:
+        value_range = _frd_scalar_range(_frd_file_for_state(fem_part, state_index), field_name)
+    if value_range is None:
+        return None
+    minimum, maximum = value_range
+    if minimum == maximum:
+        padding = abs(minimum) * 0.01 or 1.0
+        minimum -= padding
+        maximum += padding
+    return minimum, maximum
+
+
 def _global_pipeline_scalar_range(fem_part, field_name):
     ranges = []
     for fallback_index, result in enumerate(_linked_results(fem_part)):
@@ -785,7 +803,7 @@ def _display_pipeline(fem_part):
     return pipeline
 
 
-def _ensure_visual_pipeline(fem_part, result, preferred_field=None):
+def _ensure_visual_pipeline(fem_part, result, preferred_field=None, value_range=None):
     if result is None:
         return None
 
@@ -839,9 +857,53 @@ def _ensure_visual_pipeline(fem_part, result, preferred_field=None):
             pass
 
     _select_pipeline_field(pipeline, preferred_field)
-    _refresh_pipeline_fixed_color_range(fem_part, pipeline)
-    _schedule_pipeline_fixed_color_range_refresh(fem_part, pipeline)
+    _refresh_pipeline_fixed_color_range(fem_part, pipeline, value_range=value_range)
+    _schedule_pipeline_fixed_color_range_refresh(fem_part, pipeline, value_range=value_range)
     return pipeline
+
+
+def update_result_display(fem_part, current_result, pipeline, value_range=None):
+    """Update one body's result visibility and colors without advancing MbD motion."""
+    for result in _linked_results(fem_part):
+        visible = result is current_result and _results_display_settings(fem_part)[0]
+        view_object = getattr(result, "ViewObject", None)
+        if view_object is not None:
+            try:
+                view_object.Visibility = visible and pipeline is None
+            except Exception:
+                pass
+        result_mesh = getattr(result, "Mesh", None)
+        mesh_view = getattr(result_mesh, "ViewObject", None)
+        if mesh_view is not None:
+            try:
+                mesh_view.Visibility = visible and pipeline is None
+            except Exception:
+                pass
+    visual = getattr(fem_part, "visual", None)
+    visual_view = getattr(visual, "ViewObject", None)
+    if visual_view is not None:
+        try:
+            if pipeline is not None:
+                _apply_results_display_settings(fem_part, pipeline)
+            else:
+                visual_view.Visibility = False
+        except Exception:
+            pass
+    if pipeline is not None:
+        _refresh_pipeline_fixed_color_range(
+            fem_part,
+            pipeline,
+            value_range=value_range,
+        )
+        _schedule_pipeline_fixed_color_range_refresh(
+            fem_part,
+            pipeline,
+            value_range=value_range,
+        )
+        _apply_result_mesh_color_range(fem_part, current_result, value_range=value_range)
+    else:
+        _apply_result_mesh_color_range(fem_part, current_result)
+    return current_result
 
 
 def _refresh_pipeline_legend(pipeline):
@@ -946,7 +1008,7 @@ def _new_result(before_results, fem_part):
     return None
 
 
-def solve_fem_part_state(fem_part, state_index, runner=None):
+def solve_fem_part_state(fem_part, state_index, runner=None, *, state_applied=False):
     document = getattr(fem_part, "Document", None)
     solver = getattr(fem_part, "solver", None)
     if document is None:
@@ -954,7 +1016,8 @@ def solve_fem_part_state(fem_part, state_index, runner=None):
     if solver is None:
         raise ValueError("FEMPart has no CalculiX solver.")
 
-    apply_state(fem_part, state_index)
+    if not state_applied:
+        apply_state(fem_part, state_index)
     before_results = _linked_results(fem_part)
 
     if runner is None:
@@ -985,7 +1048,7 @@ def solve_fem_part_state(fem_part, state_index, runner=None):
     return assigned
 
 
-def import_fem_part_state(fem_part, state_index, runner=None):
+def import_fem_part_state(fem_part, state_index, runner=None, *, state_applied=False):
     document = getattr(fem_part, "Document", None)
     solver = getattr(fem_part, "solver", None)
     if document is None:
@@ -993,7 +1056,8 @@ def import_fem_part_state(fem_part, state_index, runner=None):
     if solver is None:
         raise ValueError("FEMPart has no CalculiX solver.")
 
-    apply_state(fem_part, state_index)
+    if not state_applied:
+        apply_state(fem_part, state_index)
     before_results = _linked_results(fem_part)
 
     if runner is None:
@@ -1001,7 +1065,6 @@ def import_fem_part_state(fem_part, state_index, runner=None):
         working_dir = FreeCADMbDBackend.default_calculix_working_dir(fem_part, state_index)
         fea.setup_working_dir(str(working_dir))
         fea.set_base_name(FreeCADMbDBackend.CALCULIX_BASE_NAME)
-        fea.setup_ccx()
         fea.inp_file_name = str(working_dir / f"{FreeCADMbDBackend.CALCULIX_BASE_NAME}.inp")
         frd_file = working_dir / f"{FreeCADMbDBackend.CALCULIX_BASE_NAME}.frd"
         if not frd_file.is_file():
@@ -1099,6 +1162,9 @@ class FEMResultsTaskPanel:
         self._playback_color_range = None
         self._playback_color_field = ""
         self._selected_pipeline_field = _DEFAULT_PIPELINE_FIELD
+        self._auto_scale_current_state = App.ParamGet(
+            "User parameter:BaseApp/Preferences/Mod/MbDFEM"
+        ).GetBool("ResultsAutoScaleCurrentState", True)
         self._suppress_fem_freshness_warning = False
 
         self._form_widget = QtWidgets.QWidget()
@@ -1187,6 +1253,14 @@ class FEMResultsTaskPanel:
         self.legend_checkbox.setEnabled(folder_view.ShowColorContour)
         display_layout.addWidget(self.contour_checkbox)
         display_layout.addWidget(self.legend_checkbox)
+        self.auto_scale_checkbox = QtWidgets.QCheckBox("Autoscale current state")
+        self.auto_scale_checkbox.setChecked(self._auto_scale_current_state)
+        self.auto_scale_checkbox.setToolTip(
+            "Use this state's full color range when paused. Playback keeps a fixed "
+            "range across solved states. Uncheck to use that range when paused too."
+        )
+        display_layout.addWidget(self.auto_scale_checkbox)
+        self.auto_scale_checkbox.toggled.connect(self._set_color_scale_options)
         self.contour_checkbox.toggled.connect(self._set_display_options)
         self.legend_checkbox.toggled.connect(self._set_display_options)
         self.hide_results_button = QtWidgets.QPushButton("Hide results")
@@ -1226,6 +1300,24 @@ class FEMResultsTaskPanel:
         if not _pipeline_field_name(pipeline):
             _select_pipeline_field(pipeline)
         _apply_results_display_settings(self.fem_part, pipeline)
+
+    def _set_color_scale_options(self, enabled):
+        self._auto_scale_current_state = bool(enabled)
+        App.ParamGet("User parameter:BaseApp/Preferences/Mod/MbDFEM").SetBool(
+            "ResultsAutoScaleCurrentState", self._auto_scale_current_state
+        )
+        self._refresh_current_color_range()
+
+    def _refresh_current_color_range(self):
+        pipeline = getattr(self.fem_part, "visual", None)
+        if pipeline is None:
+            return
+        value_range = self._active_color_range(pipeline)
+        _refresh_pipeline_fixed_color_range(self.fem_part, pipeline, value_range=value_range)
+        _schedule_pipeline_fixed_color_range_refresh(self.fem_part, pipeline, value_range=value_range)
+        result = _result_for_state(self.fem_part, self.state_spin.value())
+        if result is not None:
+            _apply_result_mesh_color_range(self.fem_part, result, value_range=value_range)
 
     def _hide_results(self):
         self.results_folder.ViewObject.Visibility = False
@@ -1438,9 +1530,7 @@ class FEMResultsTaskPanel:
         field = getattr(self, "_selected_pipeline_field", "") or _pipeline_field_name(pipeline)
         if field:
             _select_pipeline_field(pipeline, field)
-        value_range = self._active_playback_color_range(pipeline)
-        if value_range is None and field:
-            value_range = _global_pipeline_scalar_range(self.fem_part, field)
+        value_range = self._active_color_range(pipeline)
         _refresh_pipeline_fixed_color_range(self.fem_part, pipeline, value_range=value_range)
         _schedule_pipeline_fixed_color_range_refresh(
             self.fem_part,
@@ -1471,17 +1561,15 @@ class FEMResultsTaskPanel:
             pass
         self._playback_color_range = None
         self._playback_color_field = ""
-        value_range = (
-            _global_pipeline_scalar_range(self.fem_part, self._selected_pipeline_field)
-            if getattr(self, "_selected_pipeline_field", "")
-            else None
-        )
+        if getattr(self, "_playing", False):
+            self._freeze_playback_color_range()
+        value_range = self._active_color_range(pipeline)
         _refresh_pipeline_fixed_color_range(self.fem_part, pipeline, value_range=value_range)
         _schedule_pipeline_fixed_color_range_refresh(self.fem_part, pipeline, value_range=value_range)
         self._refresh_field_label()
 
     def _active_playback_color_range(self, pipeline):
-        if not self._playing:
+        if not getattr(self, "_playing", False):
             return None
         if self._playback_color_field != _pipeline_field_name(pipeline):
             return None
@@ -1493,6 +1581,10 @@ class FEMResultsTaskPanel:
             return playback_range
         field = getattr(self, "_selected_pipeline_field", "") or _pipeline_field_name(pipeline) or _DEFAULT_PIPELINE_FIELD
         field = _pipeline_field_raw_name(field)
+        if field and getattr(self, "_auto_scale_current_state", False):
+            value_range = _state_pipeline_scalar_range(self.fem_part, field, self.state_spin.value())
+            if value_range is not None:
+                return value_range
         return _global_pipeline_scalar_range(self.fem_part, field) if field else None
 
     def _freeze_playback_color_range(self):
@@ -1531,6 +1623,8 @@ class FEMResultsTaskPanel:
             self._show_state(self.state_spin.value())
             self._refresh()
         except Exception as exc:
+            if self._playing:
+                self._stop_playback()
             App.Console.PrintError(f"{exc}\n")
             self._refresh(str(exc))
 
@@ -1554,20 +1648,39 @@ class FEMResultsTaskPanel:
         self._stop_requested = True
 
     def _play_results(self):
+        if self._playing:
+            return
         indices = self._interval_indices()
         if not indices:
             self._refresh("No states in the selected time interval.")
             return
 
+        warnings = []
+        if not self._suppress_fem_freshness_warning:
+            for index in indices:
+                if _result_for_state(self.fem_part, index) is not None:
+                    message = FreeCADMbDBackend.fem_files_freshness_warning(self.fem_part, index)
+                    if message:
+                        warnings.append(message)
+        if warnings:
+            message = warnings[0] + (
+                f"\n\n{len(warnings)} states in the selected interval have stale FEM files."
+                "\nContinue playback of this interval?")
+            if not self._confirm_warning(message, "Stale FEM Files"):
+                self._refresh("FEM result playback canceled.")
+                return
+        self._playback_freshness_approved_states = set(indices)
         self._playing = True
         self.play_button.setEnabled(False)
         self.stop_playback_button.setEnabled(True)
         self._freeze_playback_color_range()
         self._set_state(indices[0])
-        self._play_timer.start()
+        if self._playing:
+            self._play_timer.start()
 
     def _stop_playback(self):
         self._playing = False
+        self._playback_freshness_approved_states = set()
         self._playback_color_range = None
         self._playback_color_field = ""
         try:
@@ -1577,9 +1690,10 @@ class FEMResultsTaskPanel:
         count = state_count(self.fem_part) if self.fem_part is not None else 0
         self.play_button.setEnabled(count > 0)
         self.stop_playback_button.setEnabled(False)
+        self._refresh_current_color_range()
 
     def _play_next_state(self):
-        if not self._playing:
+        if not self._playing or getattr(self, "_advancing_playback", False):
             return
 
         indices = self._interval_indices()
@@ -1594,11 +1708,22 @@ class FEMResultsTaskPanel:
             next_position = 0
         if next_position >= len(indices):
             next_position = 0
-        self._set_state(indices[next_position])
+        self._advancing_playback = True
+        try:
+            self._set_state(indices[next_position])
+        finally:
+            self._advancing_playback = False
 
     def _show_state(self, index):
         current_result = _result_for_state(self.fem_part, index)
-        if current_result is not None and not self._suppress_fem_freshness_warning:
+        approved = self._playing and index in getattr(
+            self, "_playback_freshness_approved_states", set())
+        if (current_result is not None and not self._suppress_fem_freshness_warning
+                and not approved):
+            # Manual navigation outside the approved playback range must not
+            # open a modal dialog while the animation timer is running.
+            if self._playing:
+                self._stop_playback()
             if not self._confirm_warning(
                 FreeCADMbDBackend.fem_files_freshness_warning(self.fem_part, index),
                 "Stale FEM Files",
@@ -1620,46 +1745,7 @@ class FEMResultsTaskPanel:
                 value_range=value_range,
             )
         self._refresh_pipeline_task_widgets()
-        for result in _linked_results(self.fem_part):
-            visible = result is current_result and _results_display_settings(self.fem_part)[0]
-            view_object = getattr(result, "ViewObject", None)
-            if view_object is not None:
-                try:
-                    view_object.Visibility = visible and pipeline is None
-                except Exception:
-                    pass
-            result_mesh = getattr(result, "Mesh", None)
-            mesh_view = getattr(result_mesh, "ViewObject", None)
-            if mesh_view is not None:
-                try:
-                    mesh_view.Visibility = visible and pipeline is None
-                except Exception:
-                    pass
-        visual = getattr(self.fem_part, "visual", None)
-        visual_view = getattr(visual, "ViewObject", None)
-        if visual_view is not None:
-            try:
-                if pipeline is not None:
-                    _apply_results_display_settings(self.fem_part, pipeline)
-                else:
-                    visual_view.Visibility = False
-            except Exception:
-                pass
-        if pipeline is not None:
-            _refresh_pipeline_fixed_color_range(
-                self.fem_part,
-                pipeline,
-                value_range=value_range,
-            )
-            _schedule_pipeline_fixed_color_range_refresh(
-                self.fem_part,
-                pipeline,
-                value_range=value_range,
-            )
-            _apply_result_mesh_color_range(self.fem_part, current_result, value_range=value_range)
-        else:
-            _apply_result_mesh_color_range(self.fem_part, current_result)
-        return current_result
+        return update_result_display(self.fem_part, current_result, pipeline, value_range)
 
     def _run_state(self, index):
         from PySide import QtWidgets

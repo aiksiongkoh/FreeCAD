@@ -14,8 +14,6 @@
 # pylint: disable=unused-argument
 
 
-from femtaskpanels import task_solver_ccxtools
-
 import contextlib
 import hashlib
 import json
@@ -27,6 +25,8 @@ import shutil
 _321_CONSTRAINT_TOLERANCE = 1.0e-9
 _321_CONSTRAINT_MARKER = "** Automatic 3-2-1 constraints\n"
 _321_CONSTRAINT_NSET = "MbDFEM321Constraints"
+_GROUND_CONSTRAINT_MARKER = "** MbDGroundPart fixed ground faces\n"
+_GROUND_CONSTRAINT_NSET = "MbDFEMGroundFaces"
 _MBD_FRAME_METADATA_SIDECAR = "mbdfem_frame.json"
 _MBD_GRAVITY_MARKER = "** MbDAssembly gravity\n"
 _MBD_DALEMBERT_MARKER = "** MbDPart D'Alembert element loads\n"
@@ -34,7 +34,7 @@ _MBD_JOINT_CLOAD_MARKER = "** MbDJoint FacePair CLOADs\n"
 _MBD_LEGACY_JOINT_CYLINDER_LOAD_MARKER = "** MbDJoint cylindrical hole side loads\n"
 _MBD_JOINT_CYLINDER_LOAD_MARKER = _MBD_JOINT_CLOAD_MARKER
 _MBD_CLOAD_ARTIFACT = "cloads"
-_MBD_CLOAD_ALGORITHM = "joint_face_pair_cload_v6"
+_MBD_CLOAD_ALGORITHM = "joint_face_pair_cload_v11"
 _CCX_STATIC_NO_BC_MESSAGE = "Static analysis: No mechanical boundary conditions defined.\n"
 _INP_SECTION_SEPARATOR = 59 * "*"
 _original_solver_reject = None
@@ -83,6 +83,8 @@ def install_solver_task_panel_close_fallback():
 
     if _original_solver_reject is not None:
         return
+
+    from femtaskpanels import task_solver_ccxtools
 
     _original_solver_reject = task_solver_ccxtools._TaskPanel.reject
 
@@ -471,7 +473,9 @@ def install_mesh_task_panel_report_view_override():
 class FEMPartAnalysisAdapter:
     """Small analysis-like object that exposes a FEMPart as an analysis group."""
 
-    Add321Constraints = True
+    @property
+    def Add321Constraints(self):
+        return not _is_ground_fem_part(self.fem_part)
 
     def __init__(self, fem_part):
         self.fem_part = fem_part
@@ -578,6 +582,7 @@ class FEMPartCcxTools:
                 return _remove_auto_321_static_bc_message(
                     super().check_prerequisites(),
                     _fem_mesh_nodes(self.mesh),
+                    fem_part=fem_part,
                 )
 
             def write_inp_file(self):
@@ -598,21 +603,9 @@ class FEMPartCcxTools:
                     if gravity is not None or dalembert_loads:
                         _ensure_mbd_density_in_inp(self.inp_file_name, fem_part)
                 nodes = _fem_mesh_nodes(self.mesh)
-                if self.inp_file_name and nodes:
-                    constraint_nodes = _321_constraint_nodes_for_fem_part(
-                        fem_part,
-                        report_recalculation=True,
-                    )
-                    self.auto_321_constraint_nodes = _add_321_constraints_to_inp(
-                        self.inp_file_name,
-                        nodes,
-                        constraint_nodes=constraint_nodes,
-                    )
-                    _write_321_constraint_frame_metadata(
-                        self.inp_file_name,
-                        fem_part,
-                        self.auto_321_constraint_nodes,
-                    )
+                if self.inp_file_name:
+                    self.auto_321_constraint_nodes = _add_fem_part_constraints_to_inp(
+                        self.inp_file_name, fem_part, nodes)
 
             def _use_configured_input_basename(self):
                 if not getattr(self, "inp_file_name", None):
@@ -914,7 +907,83 @@ def _resolve_ccx_binary(ccx_binary):
     return ccx_binary
 
 
-def _remove_auto_321_static_bc_message(message, nodes):
+def _is_ground_fem_part(fem_part):
+    mbd_part = getattr(fem_part, "mbdItem", None)
+    return mbd_part is not None and mbd_part.isDerivedFrom("MbDFEM::MbDGroundPart")
+
+
+def _ground_face_node_ids(fem_part):
+    """Find mesh nodes on finite ground faces in the mesh node coordinate frame."""
+    import FreeCAD as App
+
+    references = list(fem_part.mbdItem.groundFaces)
+    mesh = getattr(fem_part, "mesh", None)
+    if not references:
+        raise ValueError("MbDGroundPart has no groundFaces selected.")
+    if not _fem_mesh_nodes(mesh):
+        raise ValueError("Ground face constraints require a FEM mesh with nodes.")
+    # FemMesh node coordinates include the mesh's own Placement but not its
+    # parent group's Placement. Remove only the parent transform from the face.
+    mesh_parent = _global_placement(mesh) * mesh.Placement.inverse()
+    to_mesh_frame = mesh_parent.inverse()
+    node_ids = set()
+    for owner, names in references:
+        if owner is None or not names:
+            raise ValueError("groundFaces contains an empty face reference.")
+        shape = owner.Shape.copy()
+        shape.Placement = App.Placement()
+        transform = to_mesh_frame * _global_placement(owner)
+        for name in names:
+            face = shape.getElement(name)
+            if face.isNull() or face.ShapeType != "Face":
+                raise ValueError(f"{owner.Name}.{name} is not a valid ground face.")
+            face.transformShape(transform.toMatrix())
+            selected = mesh.FemMesh.getNodesByFace(face)
+            if not selected:
+                raise ValueError(f"No FEM mesh nodes lie on ground face {owner.Name}.{name}.")
+            node_ids.update(int(node_id) for node_id in selected)
+    return sorted(node_ids)
+
+
+def _add_ground_face_constraints_to_inp(inp_file_name, fem_part):
+    node_ids = _ground_face_node_ids(fem_part)
+    with open(inp_file_name, "r", encoding="utf-8") as inp_file:
+        content = inp_file.read()
+    if _GROUND_CONSTRAINT_MARKER in content:
+        return node_ids
+    before_step_at = _find_before_step_insert_position(content)
+    in_step_at = _find_in_step_insert_position(content)
+    if before_step_at < 0 or in_step_at < 0:
+        raise ValueError("Ground face constraints require a *STEP section in the input file.")
+    model_block = "\n" + _GROUND_CONSTRAINT_MARKER + f"*NSET,NSET={_GROUND_CONSTRAINT_NSET}\n"
+    for index in range(0, len(node_ids), 16):
+        model_block += ",".join(str(node_id) for node_id in node_ids[index:index + 16]) + "\n"
+    step_block = f"*BOUNDARY\n{_GROUND_CONSTRAINT_NSET},1,3,0\n"
+    with open(inp_file_name, "w", encoding="utf-8") as inp_file:
+        inp_file.write(content[:before_step_at] + model_block
+                       + content[before_step_at:in_step_at] + step_block + content[in_step_at:])
+    return node_ids
+
+
+def _add_fem_part_constraints_to_inp(inp_file_name, fem_part, nodes):
+    if _is_ground_fem_part(fem_part):
+        _add_ground_face_constraints_to_inp(inp_file_name, fem_part)
+        return None
+    if nodes:
+        constraint_nodes = _321_constraint_nodes_for_fem_part(fem_part, report_recalculation=True)
+        constraints = _add_321_constraints_to_inp(inp_file_name, nodes, constraint_nodes=constraint_nodes)
+        _write_321_constraint_frame_metadata(inp_file_name, fem_part, constraints)
+        return constraints
+    return None
+
+
+def _remove_auto_321_static_bc_message(message, nodes, fem_part=None):
+    if _is_ground_fem_part(fem_part):
+        try:
+            _ground_face_node_ids(fem_part)
+        except Exception as exc:
+            return message + f"Ground face constraints: {exc}\n"
+        return message.replace(_CCX_STATIC_NO_BC_MESSAGE, "")
     if _calculate_321_constraints(nodes) is None:
         return message
     return message.replace(_CCX_STATIC_NO_BC_MESSAGE, "")
@@ -1046,6 +1115,8 @@ def _stored_321_constraints_for_fem_part(fem_part, mesh_object, nodes, signature
 
 
 def _321_constraint_nodes_for_fem_part(fem_part, report_recalculation=False):
+    if _is_ground_fem_part(fem_part):
+        return None
     import FreeCAD as App
 
     mesh_object = getattr(fem_part, "Mesh", None)
@@ -1574,10 +1645,6 @@ def _add_mbd_joint_loads_to_inp(inp_file_name, fem_part, state_index=None):
     return loads
 
 
-def _add_mbd_joint_cylindrical_hole_loads_to_inp(inp_file_name, fem_part, state_index=None):
-    return _add_mbd_joint_loads_to_inp(inp_file_name, fem_part, state_index=state_index)
-
-
 def _write_mbd_cload_frame_metadata(inp_file_name, fem_part, mesh_object, mesh_signature):
     if not mesh_signature:
         return
@@ -1597,45 +1664,28 @@ def _write_mbd_cload_frame_metadata(inp_file_name, fem_part, mesh_object, mesh_s
 def _mbd_joint_loads(fem_part, state_index=None):
     mesh_object = getattr(fem_part, "mesh", None)
     nodes = _fem_mesh_nodes(mesh_object) if mesh_object is not None else {}
-    assembly = _owning_mbd_assembly(fem_part)
     mbd_part = getattr(fem_part, "mbdItem", None)
-    if not nodes or assembly is None or mbd_part is None:
+    if not nodes or mbd_part is None:
         return []
 
     loads = []
-    for joint, _marker, sign in _part_joints_for_mbd_part(mbd_part, assembly):
-        force = _vector_in_fem_part_coordinates(
-            fem_part,
-            _scaled_vector(_sample_joint_force(joint, state_index), sign),
-            state_index=state_index,
-        )
-        torque = _vector_in_fem_part_coordinates(
-            fem_part,
-            _scaled_vector(_sample_joint_torque(joint, state_index), sign),
-            state_index=state_index,
-        )
+    for joint, _marker, _sign in _part_joints_for_fem_part(fem_part):
         loads.extend(
             _joint_loads_for_fem_part(
                 joint,
                 mbd_part,
                 nodes,
-                force,
-                torque,
-                force_origin=_joint_force_origin_in_fem_part(joint, fem_part, state_index),
                 sample=None if state_index is None else (state_index, state_index, 0.0),
             )
         )
     return loads
 
 
-def _mbd_joint_cylindrical_hole_loads(fem_part, state_index=None):
-    return _mbd_joint_loads(fem_part, state_index=state_index)
-
-
-def _joint_loads_for_fem_part(joint, mbd_part, nodes, force, torque=None, force_origin=None, sample=None):
+def _joint_loads_for_fem_part(joint, mbd_part, nodes, sample=None):
     face_pairs = [
         pair for pair in _joint_face_pairs(joint)
-        if pair.get("type") == "CylCyl" and _face_pair_side_for_part(pair, mbd_part) is not None
+        if pair.get("type") in ("CylCyl", "AnnuAnnu")
+        and _face_pair_side_for_part(pair, mbd_part) is not None
     ]
     if not face_pairs:
         return []
@@ -1643,72 +1693,47 @@ def _joint_loads_for_fem_part(joint, mbd_part, nodes, force, torque=None, force_
     loads = []
     for face_pair in face_pairs:
         side = _face_pair_side_for_part(face_pair, mbd_part)
-        if face_pair.get("role" + side) == "hole":
-            import FreeCAD as App
+        if face_pair.get("type") == "AnnuAnnu":
             import MbDFEM
 
-            try:
-                load = MbDFEM.cylCylJointHoleLoad(
-                    face_pair["object"], joint, mbd_part,
-                    [(int(node_id), node) for node_id, node in sorted(nodes.items())],
-                    [pair["object"] for pair in face_pairs],
-                    *(sample[:3] if sample is not None else (-1, -1, 0.0)),
-                )
-            except (RuntimeError, KeyError) as exc:
-                App.Console.PrintWarning(f"MbDFEM hole CLOADs omitted: {exc}\n")
-                continue
+            # Invalid geometry or an infeasible mesh must stop export rather
+            # than silently dropping this pair's share of the joint wrench.
+            geometry = MbDFEM.annuAnnuValidateSampledGeometry(
+                face_pair["object"], *(sample[:3] if sample is not None else (-1, -1, 0.0)))
+            annulus_owner = getattr(face_pair["object"], "face" + geometry["annulusSide"])[0]
+            generate_load = (MbDFEM.annuAnnuJointAnnulusLoad if annulus_owner is mbd_part
+                             else MbDFEM.annuAnnuJointOtherAnnulusLoad)
+            load = generate_load(
+                face_pair["object"], joint, mbd_part,
+                [(int(node_id), node) for node_id, node in sorted(nodes.items())],
+                [pair["object"] for pair in face_pairs],
+                *(sample[:3] if sample is not None else (-1, -1, 0.0)),
+            )
+            annulus_owner = getattr(face_pair["object"], "face" + load["annulusSide"])[0]
             load.update(joint=joint, owner=mbd_part, face=face_pair["face" + side],
-                        face_pair=face_pair, face_pair_type="CylCyl", face_side=side, face_role="hole")
+                        face_pair=face_pair, face_pair_type="AnnuAnnu", face_side=side,
+                        face_role="annulus" if annulus_owner is mbd_part else "other")
             loads.append(load)
             continue
-        # Pin-side prototype only. Finalized hole reactions are handled above.
-        fraction = 1.0 / len(face_pairs)
-        pair_force = _scaled_vector(force, fraction)
-        pair_torque = _scaled_vector(torque, fraction) if torque is not None else None
-        if force_origin is not None:
-            side = _face_pair_side_for_part(face_pair, mbd_part)
-            reference = _cylindrical_face_reference(face_pair["face" + side])
-            if reference is None:
-                continue
-            # Both points and the force are in the FEM part's coordinates.
-            moment_shift = (force_origin - reference["origin"]).cross(pair_force)
-            pair_torque = moment_shift if pair_torque is None else pair_torque + moment_shift
-        load = _face_pair_cloads_for_fem_part(joint, face_pair, mbd_part, nodes, pair_force, pair_torque)
-        if load is not None:
-            loads.append(load)
+        import MbDFEM
+
+        role = face_pair.get("role" + side)
+        if role not in ("hole", "pin"):
+            raise RuntimeError("Cylindrical FacePair must identify a hole and a pin.")
+        generate_load = (MbDFEM.cylCylJointHoleLoad if role == "hole"
+                         else MbDFEM.cylCylJointPinLoad)
+        load = generate_load(
+            face_pair["object"], joint, mbd_part,
+            [(int(node_id), node) for node_id, node in sorted(nodes.items())],
+            [pair["object"] for pair in face_pairs],
+            *(sample[:3] if sample is not None else (-1, -1, 0.0)),
+        )
+        if not any(load["cload_components"].values()):
+            continue
+        load.update(joint=joint, owner=mbd_part, face=face_pair["face" + side],
+                    face_pair=face_pair, face_pair_type="CylCyl", face_side=side, face_role=role)
+        loads.append(load)
     return loads
-
-
-def _face_pair_cloads_for_fem_part(joint, face_pair, mbd_part, nodes, force, torque=None):
-    if face_pair.get("type") != "CylCyl":
-        return None
-
-    side = _face_pair_side_for_part(face_pair, mbd_part)
-    if side is None:
-        return None
-
-    face_key = "face{}".format(side)
-    owner_key = "part{}".format(side)
-    face = face_pair.get(face_key)
-    owner = face_pair.get(owner_key)
-    face_role = face_pair.get("role{}".format(side))
-    load = _prototype_pin_face_load(
-        joint,
-        face,
-        owner,
-        nodes,
-        force,
-        torque,
-    )
-    if load is None:
-        return None
-
-    load["face_pair"] = face_pair
-    load["face_pair_type"] = face_pair.get("type")
-    load["face_side"] = side
-    load["face_role"] = face_pair.get("role{}".format(side))
-    load["torque"] = torque
-    return load
 
 
 def _face_pair_side_for_part(face_pair, mbd_part):
@@ -1717,181 +1742,6 @@ def _face_pair_side_for_part(face_pair, mbd_part):
     if face_pair.get("partJ") is mbd_part:
         return "J"
     return None
-
-
-def _prototype_pin_face_load(
-    joint,
-    face,
-    owner,
-    nodes,
-    force,
-    torque=None,
-):
-    """Pin-side prototype; finalized hole loading is owned by CylCylFacePair."""
-    import FreeCAD as App
-
-    force_system = _joint_cylindrical_face_force_system(face, force)
-    torque_system = _joint_cylindrical_face_torque_system(face, torque)
-    if force_system is None and torque_system is None:
-        return None
-
-    if force_system is not None:
-        origin, x_axis, y_axis, z_axis, force_x, force_z, reference = force_system
-    else:
-        origin, x_axis, y_axis, z_axis, _, _, reference = torque_system
-        force_x = 0.0
-        force_z = 0.0
-
-    octants = _cylindrical_face_node_octants_from_reference(
-        reference,
-        nodes,
-        origin,
-        x_axis,
-        y_axis,
-        z_axis,
-    )
-    side_selected = {name: octants[name] for name in ("U1", "U4", "L1", "L4")}
-    axis_selected = _joint_axis_force_node_sets(octants)
-    side_nodal_values = None
-    node_cosines = {}
-    axis_nodal_values = None
-    torque_side_load = None
-    torque_axis_load = None
-    cpp_cloads = []
-
-    if force_x > _321_CONSTRAINT_TOLERANCE and not any(
-        not node_ids for node_ids in side_selected.values()
-    ):
-        node_cosines = _joint_side_force_node_cosines(side_selected, nodes, origin, x_axis, y_axis)
-        side_nodal_values = _prototype_pin_side_force_values(
-            side_selected,
-            nodes,
-            origin,
-            y_axis,
-            z_axis,
-            force_x,
-            node_cosines,
-        )
-
-    if abs(force_z) > _321_CONSTRAINT_TOLERANCE and not any(
-        not node_ids for node_ids in axis_selected.values()
-    ):
-        axis_nodal_values = _prototype_pin_axial_force_values(
-            axis_selected,
-            nodes,
-            origin,
-            x_axis,
-            y_axis,
-            force_z,
-        )
-
-    if torque_system is not None:
-        torque_side_load = _prototype_pin_bending_load(
-            torque_system,
-            nodes,
-        )
-        if torque_system[4] > _321_CONSTRAINT_TOLERANCE and torque_side_load is None:
-            App.Console.PrintWarning(
-                "MbDFEM joint CLOADs omitted: bending torque cannot be distributed on this mesh.\n"
-            )
-            return None
-        torque_z = torque_system[5]
-        if abs(torque_z) > _321_CONSTRAINT_TOLERANCE:
-            torque_axis_load = _prototype_pin_axial_torque_load(
-                nodes, octants, origin, x_axis, y_axis, z_axis, torque_z
-            )
-            if torque_axis_load is None:
-                App.Console.PrintWarning(
-                    "MbDFEM joint CLOADs omitted: the cylindrical face mesh cannot "
-                    "support the requested axial torque with zero resultant force "
-                    "and zero transverse moment. Refine the mesh around the joint.\n"
-                )
-                return None
-
-    if (not cpp_cloads and side_nodal_values is None and axis_nodal_values is None
-            and torque_side_load is None and torque_axis_load is None):
-        return None
-
-    load = {
-        "joint": joint,
-        "owner": owner,
-        "face": face,
-        "origin": origin,
-        "x_axis": x_axis,
-        "y_axis": y_axis,
-        "z_axis": z_axis,
-        "force_x": force_x,
-        "force_z": force_z,
-        "octants": octants,
-        "node_cosines": node_cosines,
-        "nodal_values": side_nodal_values or {},
-        "axis_sets": axis_selected,
-        "axis_nodal_values": axis_nodal_values or {},
-        "torque_side_load": torque_side_load or {},
-        "torque_axis_load": torque_axis_load or {},
-        "cloads": cpp_cloads,
-    }
-    return load if _prototype_pin_cloads_in_equilibrium(load, nodes, force, torque) else None
-
-
-def _prototype_pin_cloads_in_equilibrium(load, nodes, force, torque):
-    """Validate the actual formatted records; never merge debugging contributions."""
-    import FreeCAD as App
-
-    resultant, moment = App.Vector(), App.Vector()
-    origin = load["origin"]
-    length = 0.0
-    for line in _format_joint_face_pair_cloads(load).splitlines():
-        if not line or line.startswith("*"):
-            continue
-        target, dof, value = line.split(",")
-        if target.startswith("NS"):
-            name = target[2:]
-            node_ids = load.get("octants", {}).get(name, load.get("axis_sets", {}).get(name, []))
-        else:
-            node_ids = [int(target)]
-        vector = App.Vector()
-        vector[int(dof) - 1] = float(value)
-        for node_id in node_ids:
-            relative = nodes[node_id] - origin
-            length = max(length, relative.Length)
-            resultant += vector
-            moment += relative.cross(vector)
-    requested_moment = torque if torque is not None else App.Vector()
-    force_tolerance = 1e-9 * max(1.0, force.Length)
-    moment_tolerance = 1e-9 * max(1.0, requested_moment.Length, force.Length * length)
-    if (not all(math.isfinite(v) for v in (*resultant, *moment))
-            or (resultant - force).Length > force_tolerance
-            or (moment - requested_moment).Length > moment_tolerance):
-        App.Console.PrintWarning(
-            "MbDFEM joint CLOADs omitted: exported records do not preserve all six "
-            "force/moment components. Refine the mesh around the joint.\n"
-        )
-        return False
-    return True
-
-
-def _cylindrical_face_node_octants_from_reference(reference, nodes, origin, x_axis, y_axis, z_axis):
-    candidates = _cylindrical_surface_node_ids(reference, nodes, origin, z_axis)
-    octants = {name: [] for name in ("U1", "U2", "U3", "U4", "L1", "L2", "L3", "L4")}
-    for node_id in candidates:
-        rel = nodes[node_id] - origin
-        local_x = rel.dot(x_axis)
-        local_y = rel.dot(y_axis)
-        local_z = rel.dot(z_axis)
-        level = "U" if local_z >= 0.0 else "L"
-        if local_x >= 0.0 and local_y >= 0.0:
-            quadrant = "1"
-        elif local_x < 0.0 <= local_y:
-            quadrant = "2"
-        elif local_x < 0.0 and local_y < 0.0:
-            quadrant = "3"
-        else:
-            quadrant = "4"
-        octants[level + quadrant].append(node_id)
-    for node_ids in octants.values():
-        node_ids.sort()
-    return octants
 
 
 def _cylindrical_surface_node_ids(reference, nodes, origin, z_axis):
@@ -1955,183 +1805,6 @@ def _marker_cylindrical_reference(marker):
     return None
 
 
-def _joint_cylindrical_face_force_system(face, force):
-    import FreeCAD as App
-
-    reference = _cylindrical_face_reference(face)
-    if reference is None:
-        return None
-
-    origin = App.Vector(reference["origin"])
-    z_axis = _normalized_vector(reference["axis"])
-    if z_axis is None:
-        return None
-
-    force_z = force.dot(z_axis)
-    force_axis = z_axis * force_z
-    force_side = force - force_axis
-    force_x = _vector_magnitude(force_side)
-
-    if force_x > _321_CONSTRAINT_TOLERANCE:
-        x_axis = _normalized_vector(force_side)
-    else:
-        x_axis = _cylindrical_face_default_x_axis(face, z_axis)
-    if x_axis is None:
-        return None
-    x_axis = _normalized_vector(x_axis - z_axis * x_axis.dot(z_axis))
-    if x_axis is None:
-        return None
-    y_axis = _normalized_vector(z_axis.cross(x_axis))
-    if y_axis is None:
-        return None
-    x_axis = _normalized_vector(y_axis.cross(z_axis))
-    if x_axis is None:
-        return None
-    if force_x <= _321_CONSTRAINT_TOLERANCE and abs(force_z) <= _321_CONSTRAINT_TOLERANCE:
-        return None
-    return origin, x_axis, y_axis, z_axis, force_x, force_z, reference
-
-
-def _joint_cylindrical_face_torque_system(face, torque):
-    import FreeCAD as App
-
-    if torque is None:
-        return None
-
-    reference = _cylindrical_face_reference(face)
-    if reference is None:
-        return None
-
-    origin = App.Vector(reference["origin"])
-    z_axis = _normalized_vector(reference["axis"])
-    if z_axis is None:
-        return None
-
-    torque_z = torque.dot(z_axis)
-    torque_axis = z_axis * torque_z
-    torque_side = torque - torque_axis
-    torque_y = _vector_magnitude(torque_side)
-
-    if torque_y > _321_CONSTRAINT_TOLERANCE:
-        y_axis = _normalized_vector(torque_side)
-    else:
-        y_axis = _torque_side_fallback_y_axis(z_axis)
-    if y_axis is None:
-        return None
-    y_axis = _normalized_vector(y_axis - z_axis * y_axis.dot(z_axis))
-    if y_axis is None:
-        return None
-    x_axis = _normalized_vector(y_axis.cross(z_axis))
-    if x_axis is None:
-        return None
-    if torque_y <= _321_CONSTRAINT_TOLERANCE and abs(torque_z) <= _321_CONSTRAINT_TOLERANCE:
-        return None
-    return origin, x_axis, y_axis, z_axis, torque_y, torque_z, reference
-
-
-def _torque_side_fallback_y_axis(z_axis):
-    import FreeCAD as App
-
-    mesh_x_axis = App.Vector(1, 0, 0)
-    y_axis = _normalized_vector(z_axis.cross(mesh_x_axis))
-    if y_axis is not None:
-        return y_axis
-    mesh_y_axis = App.Vector(0, 1, 0)
-    return _normalized_vector(mesh_y_axis - z_axis * mesh_y_axis.dot(z_axis))
-
-
-def _prototype_pin_bending_load(torque_system, nodes):
-    origin, x_axis, y_axis, z_axis, torque_y, _, reference = torque_system
-    if torque_y <= _321_CONSTRAINT_TOLERANCE:
-        return None
-
-    octants = _cylindrical_face_node_octants_from_reference(
-        reference,
-        nodes,
-        origin,
-        x_axis,
-        y_axis,
-        z_axis,
-    )
-    selected = {name: octants[name] for name in ("U1", "U4", "L2", "L3")}
-    if any(not node_ids for node_ids in selected.values()):
-        return None
-
-    node_cosines = _joint_side_force_node_cosines(selected, nodes, origin, x_axis, y_axis)
-    node_z_values = _joint_torque_y_node_z_values(selected, nodes, origin, z_axis)
-    nodal_values = _prototype_pin_bending_force_values(
-        selected,
-        nodes,
-        origin,
-        y_axis,
-        z_axis,
-        torque_y,
-        node_cosines,
-        node_z_values,
-    )
-    if nodal_values is None:
-        return None
-
-    return {
-        "origin": origin,
-        "x_axis": x_axis,
-        "y_axis": y_axis,
-        "z_axis": z_axis,
-        "torque_y": torque_y,
-        "octants": octants,
-        "node_cosines": node_cosines,
-        "node_z_values": node_z_values,
-        "nodal_values": nodal_values,
-    }
-
-
-def _prototype_pin_axial_torque_load(
-    nodes, octants, origin, x_axis, y_axis, z_axis, torque_z
-):
-    """Minimize eight region force magnitudes subject to five wrench constraints."""
-    import numpy as np
-
-    names = ("U1", "U2", "U3", "U4", "L1", "L2", "L3", "L4")
-    constraints = np.zeros((5, 8))
-    tangents = {}
-    length_scale = 0.0
-    for column, name in enumerate(names):
-        for node_id in octants[name]:
-            relative = nodes[node_id] - origin
-            length_scale = max(length_scale, relative.Length)
-            radial = relative - z_axis * relative.dot(z_axis)
-            if radial.Length <= _321_CONSTRAINT_TOLERANCE:
-                return None
-            tangent = z_axis.cross(radial) * (1.0 / radial.Length)
-            tangents[node_id] = tangent
-            moment = relative.cross(tangent)
-            constraints[:, column] += (
-                tangent.dot(x_axis), tangent.dot(y_axis), moment.dot(z_axis),
-                moment.dot(y_axis), moment.dot(x_axis),
-            )
-
-    rhs = np.array([0.0, 0.0, torque_z, 0.0, 0.0])
-    # Scale moments to force units without amplifying roundoff in zero rows.
-    # SVD also handles
-    # redundant constraints (for example, a single ring at the face center).
-    length_scale = length_scale or 1.0
-    scales = np.array([1.0, 1.0, length_scale, length_scale, length_scale])
-    matrix, target = constraints / scales[:, None], rhs / scales
-    values = np.linalg.lstsq(matrix, target, rcond=None)[0]
-    residual_tolerance = 1e-10 * max(1.0, float(np.linalg.norm(target)))
-    if np.linalg.norm(matrix @ values - target) > residual_tolerance:
-        return None
-
-    cloads = []
-    for name, value in zip(names, values):
-        for node_id in octants[name]:
-            force = tangents[node_id] * float(value)
-            for dof, component in enumerate((force.x, force.y, force.z), start=1):
-                if component != 0.0:
-                    cloads.append((node_id, dof, component))
-    return {"nodal_values": dict(zip(names, map(float, values))), "cloads": cloads}
-
-
 def _cylindrical_face_reference(face):
     try:
         if getattr(face.Surface, "TypeId", None) != "Part::GeomCylinder":
@@ -2164,17 +1837,6 @@ def _cylindrical_face_reference(face):
     }
 
 
-def _cylindrical_face_default_x_axis(face, z_axis):
-    try:
-        point = face.CenterOfMass
-        origin = face.Surface.Center
-        radial = point - origin
-        radial = radial - z_axis * radial.dot(z_axis)
-        return _normalized_vector(radial)
-    except Exception:
-        return None
-
-
 def _cylindrical_face_radius(face):
     try:
         return float(face.Surface.Radius)
@@ -2192,203 +1854,34 @@ def _cylindrical_face_axial_limits(face, origin, z_axis):
     return min(projections), max(projections)
 
 
-def _joint_side_force_node_cosines(selected, nodes, origin, x_axis, y_axis):
-    node_cosines = {}
-    for node_ids in selected.values():
-        for node_id in node_ids:
-            rel = nodes[node_id] - origin
-            local_x = rel.dot(x_axis)
-            local_y = rel.dot(y_axis)
-            radius = math.sqrt(local_x * local_x + local_y * local_y)
-            node_cosines[node_id] = 0.0 if radius <= _321_CONSTRAINT_TOLERANCE else local_x / radius
-    return node_cosines
-
-
-def _joint_torque_y_node_z_values(selected, nodes, origin, z_axis):
-    node_z_values = {}
-    for node_ids in selected.values():
-        for node_id in node_ids:
-            node_z_values[node_id] = (nodes[node_id] - origin).dot(z_axis)
-    return node_z_values
-
-
-def _prototype_pin_side_force_values(selected, nodes, origin, y_axis, z_axis, force_x, node_cosines):
-    names = ("U1", "U4", "L1", "L4")
-    constraints = [
-        [sum(node_cosines[node_id] for node_id in selected[name]) for name in names],
-        [
-            sum(
-                (nodes[node_id] - origin).dot(z_axis) * node_cosines[node_id]
-                for node_id in selected[name]
-            )
-            for name in names
-        ],
-        [
-            sum(
-                (nodes[node_id] - origin).dot(y_axis) * node_cosines[node_id]
-                for node_id in selected[name]
-            )
-            for name in names
-        ],
-    ]
-    rhs = [force_x, 0.0, 0.0]
-    solution = _solve_minimum_norm_constraints(constraints, rhs)
-    if solution is None:
-        return None
-    return dict(zip(names, solution))
-
-
-def _prototype_pin_bending_force_values(
-    selected,
-    nodes,
-    origin,
-    y_axis,
-    z_axis,
-    torque_y,
-    node_cosines,
-    node_z_values,
-):
-    names = ("U1", "U4", "L2", "L3")
-    constraints = [
-        [
-            sum(node_z_values[node_id] * node_cosines[node_id] for node_id in selected[name])
-            for name in names
-        ],
-        [
-            sum(
-                (nodes[node_id] - origin).dot(z_axis)
-                * node_z_values[node_id]
-                * node_cosines[node_id]
-                for node_id in selected[name]
-            )
-            for name in names
-        ],
-        [
-            sum(
-                (nodes[node_id] - origin).dot(y_axis)
-                * node_z_values[node_id]
-                * node_cosines[node_id]
-                for node_id in selected[name]
-            )
-            for name in names
-        ],
-    ]
-    rhs = [0.0, torque_y, 0.0]
-    solution = _solve_minimum_norm_constraints(constraints, rhs)
-    if solution is None:
-        return None
-    return dict(zip(names, solution))
-
-
-def _joint_axis_force_node_sets(octants):
-    return {
-        "1": list(octants["U1"]) + list(octants["L1"]),
-        "2": list(octants["U2"]) + list(octants["L2"]),
-        "3": list(octants["U3"]) + list(octants["L3"]),
-        "4": list(octants["U4"]) + list(octants["L4"]),
-    }
-
-
-def _prototype_pin_axial_force_values(selected, nodes, origin, x_axis, y_axis, force_z):
-    names = ("1", "2", "3", "4")
-    constraints = [
-        [len(selected[name]) for name in names],
-        [
-            sum((nodes[node_id] - origin).dot(y_axis) for node_id in selected[name])
-            for name in names
-        ],
-        [
-            sum((nodes[node_id] - origin).dot(x_axis) for node_id in selected[name])
-            for name in names
-        ],
-    ]
-    rhs = [force_z, 0.0, 0.0]
-    solution = _solve_minimum_norm_constraints(constraints, rhs)
-    if solution is None:
-        return None
-    return dict(zip(names, solution))
-
-
-def _solve_minimum_norm_constraints(matrix, rhs, tolerance=_321_CONSTRAINT_TOLERANCE):
-    if not matrix or not matrix[0]:
-        return None
-
-    row_count = len(matrix)
-    column_count = len(matrix[0])
-    if len(rhs) != row_count or any(len(row) != column_count for row in matrix):
-        return None
-
-    gram = [
-        [
-            sum(
-                float(matrix[row][column]) * float(matrix[other][column])
-                for column in range(column_count)
-            )
-            for other in range(row_count)
-        ]
-        for row in range(row_count)
-    ]
-    multipliers = _solve_linear_system(gram, rhs, tolerance=tolerance)
-    if multipliers is None:
-        return None
-
-    return [
-        sum(float(matrix[row][column]) * multipliers[row] for row in range(row_count))
-        for column in range(column_count)
-    ]
-
-
-def _solve_linear_system(matrix, rhs, tolerance=_321_CONSTRAINT_TOLERANCE):
-    rows = [list(row) + [float(value)] for row, value in zip(matrix, rhs)]
-    count = len(rhs)
-    for column in range(count):
-        pivot = max(
-            range(column, count),
-            key=lambda row, active_column=column: abs(rows[row][active_column]),
-        )
-        if abs(rows[pivot][column]) <= tolerance:
-            return None
-        if pivot != column:
-            rows[column], rows[pivot] = rows[pivot], rows[column]
-        pivot_value = rows[column][column]
-        rows[column] = [value / pivot_value for value in rows[column]]
-        for row in range(count):
-            if row == column:
-                continue
-            factor = rows[row][column]
-            if abs(factor) <= tolerance:
-                continue
-            rows[row] = [
-                value - factor * pivot_value
-                for value, pivot_value in zip(rows[row], rows[column])
-            ]
-    return [rows[row][-1] for row in range(count)]
-
-
 def _format_joint_face_pair_nsets(load):
     blocks = []
+    regions = load["octants"]
+    if "force_quadrants" in load:
+        pair_object = (load.get("face_pair") or {}).get("object")
+        prefix = getattr(pair_object, "Name", "")
+        prefix = prefix + "_" if prefix else ""
+        for name, node_ids in regions.items():
+            blocks.append("*NSET,NSET=NS{}{}\n".format(prefix, name))
+            for index in range(0, len(node_ids), 16):
+                blocks.append("{}\n".format(",".join(str(node_id) for node_id in node_ids[index:index + 16])))
+        return "".join(blocks)
     for name in ("U1", "U2", "U3", "U4", "L1", "L2", "L3", "L4"):
         blocks.append("*NSET,NSET=NS{}\n".format(name))
         node_ids = load["octants"][name]
         for index in range(0, len(node_ids), 16):
             blocks.append("{}\n".format(",".join(str(node_id) for node_id in node_ids[index:index + 16])))
-    axis_sets = load.get("axis_sets") or {}
-    for name in ("1", "2", "3", "4"):
-        blocks.append("*NSET,NSET=NS{}\n".format(name))
-        node_ids = axis_sets.get(name, [])
-        for index in range(0, len(node_ids), 16):
-            blocks.append("{}\n".format(",".join(str(node_id) for node_id in node_ids[index:index + 16])))
     return "".join(blocks)
 
 
-def _format_joint_cylindrical_hole_nsets(load):
-    return _format_joint_face_pair_nsets(load)
-
-
 def _format_joint_face_pair_cloads(load):
-    x_axis = load["x_axis"]
-    z_axis = load["z_axis"]
     lines = ["*CLOAD\n"]
+    if "force_quadrants" in load:
+        lines.append("** MbDFEM annular combined force and torque\n")
+        for node_id, dof, value in load["cloads"]:
+            if value != 0.0:
+                lines.append("{},{},{:.13G}\n".format(node_id, dof, value))
+        return "".join(lines)
     if "cload_components" in load:
         for name, records in load["cload_components"].items():
             lines.append("** MbDFEM {}\n".format(name))
@@ -2398,58 +1891,7 @@ def _format_joint_face_pair_cloads(load):
                     # 13 significant digits fit even a signed three-digit exponent.
                     lines.append("{},{},{:.13G}\n".format(node_id, dof, value))
         return "".join(lines)
-    cloads = list(load.get("cloads", []))
-    cloads.extend((load.get("torque_axis_load") or {}).get("cloads", []))
-    for node_id, dof, value in cloads:
-        if abs(value) > _321_CONSTRAINT_TOLERANCE:
-            lines.append("{},{},{:.13G}\n".format(node_id, dof, value))
-    if load.get("nodal_values"):
-        for name in ("U1", "U4", "L1", "L4"):
-            for node_id in load["octants"][name]:
-                value = _joint_side_force_node_value(load, name, node_id)
-                for dof, component in enumerate((x_axis.x, x_axis.y, x_axis.z), start=1):
-                    component_value = value * component
-                    if abs(component_value) > _321_CONSTRAINT_TOLERANCE:
-                        lines.append("{},{},{:.13G}\n".format(node_id, dof, component_value))
-    torque_side_load = load.get("torque_side_load") or {}
-    if torque_side_load.get("nodal_values"):
-        torque_x_axis = torque_side_load["x_axis"]
-        for name in ("U1", "U4", "L2", "L3"):
-            for node_id in torque_side_load["octants"][name]:
-                value = _joint_torque_y_node_value(torque_side_load, name, node_id)
-                for dof, component in enumerate(
-                    (torque_x_axis.x, torque_x_axis.y, torque_x_axis.z),
-                    start=1,
-                ):
-                    component_value = value * component
-                    if abs(component_value) > _321_CONSTRAINT_TOLERANCE:
-                        lines.append("{},{},{:.13G}\n".format(node_id, dof, component_value))
-    for name in ("1", "2", "3", "4"):
-        value = load.get("axis_nodal_values", {}).get(name, 0.0)
-        if abs(value) <= _321_CONSTRAINT_TOLERANCE:
-            continue
-        for dof, component in enumerate((z_axis.x, z_axis.y, z_axis.z), start=1):
-            component_value = value * component
-            if abs(component_value) > _321_CONSTRAINT_TOLERANCE:
-                lines.append("NS{},{},{:.13G}\n".format(name, dof, component_value))
-    return "".join(lines)
-
-
-def _format_joint_cylindrical_hole_cloads(load):
-    return _format_joint_face_pair_cloads(load)
-
-
-def _joint_side_force_node_value(load, name, node_id):
-    coefficient = load["nodal_values"][name]
-    cosine = load.get("node_cosines", {}).get(node_id, 1.0)
-    return coefficient * cosine
-
-
-def _joint_torque_y_node_value(load, name, node_id):
-    coefficient = load["nodal_values"][name]
-    cosine = load.get("node_cosines", {}).get(node_id, 1.0)
-    node_z = load.get("node_z_values", {}).get(node_id, 1.0)
-    return coefficient * node_z * cosine
+    raise ValueError("Joint loads require C++ cload_components or annular combined cloads.")
 
 
 def _ensure_mbd_density_in_inp(inp_file_name, fem_part):
@@ -2694,7 +2136,7 @@ def _part_global_placement_at_state(part, assembly, state_index):
     import FreeCAD as App
 
     try:
-        placement = App.Placement(part.getGlobalPlacement())
+        placement = App.Placement(_global_placement(part))
     except AttributeError:
         placement = App.Placement(part.Placement)
     if state_index is None:
@@ -2704,7 +2146,7 @@ def _part_global_placement_at_state(part, assembly, state_index):
         assembly_placement = App.Placement()
     else:
         try:
-            assembly_placement = assembly.getGlobalPlacement()
+            assembly_placement = _global_placement(assembly)
         except AttributeError:
             assembly_placement = assembly.Placement
     series = [list(getattr(part, name, [])) for name in ("xs", "ys", "zs")]
@@ -2720,23 +2162,15 @@ def _part_global_placement_at_state(part, assembly, state_index):
     return placement
 
 
-def _joint_force_origin_in_fem_part(joint, fem_part, state_index=None):
-    marker = getattr(joint, "markerI", None)
-    source_part = _mbd_part_containing_marker(marker)
-    target_part = getattr(fem_part, "mbdItem", None)
-    if source_part is None or target_part is None:
-        return None
-    if source_part is target_part:
-        return marker.Placement.Base
-    assembly = _owning_mbd_assembly(fem_part)
-    source = _part_global_placement_at_state(source_part, assembly, state_index)
-    target = _part_global_placement_at_state(target_part, assembly, state_index)
-    return target.inverse().multVec(source.multVec(marker.Placement.Base))
+def _global_placement(obj):
+    from FreeCADMbDFreeBodyDiagram import _global_placement as global_placement
+
+    return global_placement(obj)
 
 
 def _global_rotation(obj):
     try:
-        return obj.getGlobalPlacement().Rotation
+        return _global_placement(obj).Rotation
     except Exception:
         return obj.Placement.Rotation
 
@@ -2760,9 +2194,19 @@ def _owning_mbd_assembly(fem_part):
     return None
 
 
-def _part_joints_for_mbd_part(mbd_part, assembly):
+def _part_joints_for_fem_part(fem_part):
+    """Use only the FEMPart's configured joints, with the reaction sign for its side."""
+    mbd_part = getattr(fem_part, "mbdItem", None)
+    if mbd_part is None:
+        return []
+
     result = []
-    for joint in _assembly_joints(assembly):
+    seen = set()
+    for fem_joint in list(getattr(fem_part, "joints", []) or []):
+        joint = getattr(fem_joint, "mbdItem", None)
+        if joint is None or joint in seen:
+            continue
+        seen.add(joint)
         marker_i = getattr(joint, "markerI", None)
         marker_j = getattr(joint, "markerJ", None)
         if _marker_belongs_to_part(marker_i, mbd_part):
@@ -2770,10 +2214,6 @@ def _part_joints_for_mbd_part(mbd_part, assembly):
         if _marker_belongs_to_part(marker_j, mbd_part):
             result.append((joint, marker_j, -1.0))
     return result
-
-
-def _joint_touching_face_pairs(joint, tolerance=None):
-    return [(pair["faceI"], pair["faceJ"]) for pair in _joint_face_pairs(joint, tolerance=tolerance)]
 
 
 def _joint_face_pairs(joint, tolerance=None):
@@ -2935,8 +2375,8 @@ def _make_joint_face_pair(part_i, index_i, face_i, part_j, index_j, face_j):
 
 
 def _face_pair_type(kind_i, kind_j):
-    if "Anul" in (kind_i, kind_j):
-        return "AnulAnul"
+    if "Annu" in (kind_i, kind_j):
+        return "AnnuAnnu"
     if not kind_i or not kind_j:
         return None
     return "{}{}".format(kind_i, kind_j)
@@ -2952,7 +2392,7 @@ def _face_kind(face):
     if surface_type != "Part::GeomPlane":
         return None
     if _is_annular_face(face):
-        return "Anul"
+        return "Annu"
     if _is_rectangular_face(face):
         return "Rect"
     return None
@@ -3041,9 +2481,27 @@ def _cylindrical_face_radial_direction(face, point):
     return _normalized_vector(radial)
 
 
-def _set_joint_face_pairs(joint, pairs):
+def _create_fem_joint(joint):
+    """Create the FEM joint type required by the discovered contact pairs."""
+    pairs = _joint_face_pairs(joint)
+    types = [pair.get("type") for pair in pairs]
+    type_id = "MbDFEM::FEMJoint"
+    if (types.count("CylCyl") == 2 and types.count("AnnuAnnu") >= 1
+            and all(kind in ("CylCyl", "AnnuAnnu") for kind in types)):
+        type_id = "MbDFEM::FEMHole2PinFlangeJoint"
+    elif types == ["CylCyl"]:
+        type_id = "MbDFEM::FEMHolePinJoint"
+    fem_joint = joint.Document.addObject(type_id, type_id.rsplit("::", 1)[-1])
+    fem_joint.Label = f"{type_id.rsplit('::', 1)[-1]} ({joint.Label})"
+    fem_joint.mbdItem = joint
+    _set_joint_face_pairs(joint, pairs, fem_joint=fem_joint)
+    return fem_joint
+
+
+def _set_joint_face_pairs(joint, pairs, fem_joint=None):
     try:
-        fem_joint = _fem_joint_for_mbd_joint(joint)
+        if fem_joint is None:
+            fem_joint = _fem_joint_for_mbd_joint(joint)
         document = getattr(joint, "Document", None)
         if fem_joint is None or document is None or not hasattr(fem_joint, "facePairs"):
             return
@@ -3053,7 +2511,7 @@ def _set_joint_face_pairs(joint, pairs):
         for index, pair in enumerate(pairs, start=1):
             type_id = {
                 "CylCyl": "MbDFEM::CylCylFacePair",
-                "AnulAnul": "MbDFEM::AnulAnulFacePair",
+                "AnnuAnnu": "MbDFEM::AnnuAnnuFacePair",
                 "RectRect": "MbDFEM::RectRectFacePair",
             }.get(pair.get("type"), "MbDFEM::FacePair")
             face_pair_object = next(
@@ -3161,7 +2619,7 @@ def _shape_at_owner_global_placement(shape, owner):
         return None
 
     try:
-        result.transformShape(owner.getGlobalPlacement().toMatrix())
+        result.transformShape(_global_placement(owner).toMatrix())
         return result
     except Exception:
         pass
@@ -3223,48 +2681,6 @@ def _marker_belongs_to_part(marker, part):
         return marker.getParentGeoFeatureGroup() is part
     except Exception:
         return False
-
-
-def _sample_joint_force(joint, state_index=None):
-    import FreeCAD as App
-
-    values = [list(getattr(joint, name, [])) for name in ("fxs", "fys", "fzs")]
-    if not any(values):
-        return App.Vector()
-
-    count = max(len(component) for component in values)
-    if state_index is None:
-        index = 0
-    else:
-        index = max(0, min(int(state_index), count - 1))
-
-    def component(component_values):
-        if not component_values:
-            return 0.0
-        return float(component_values[max(0, min(index, len(component_values) - 1))])
-
-    return App.Vector(*(component(component_values) for component_values in values))
-
-
-def _sample_joint_torque(joint, state_index=None):
-    import FreeCAD as App
-
-    values = [list(getattr(joint, name, [])) for name in ("txs", "tys", "tzs")]
-    if not any(values):
-        return App.Vector()
-
-    count = max(len(component) for component in values)
-    if state_index is None:
-        index = 0
-    else:
-        index = max(0, min(int(state_index), count - 1))
-
-    def component(component_values):
-        if not component_values:
-            return 0.0
-        return float(component_values[max(0, min(index, len(component_values) - 1))])
-
-    return App.Vector(*(component(component_values) for component_values in values))
 
 
 def _find_321_constraint_insert_position(content):
@@ -3886,6 +3302,8 @@ class FEMPartSolverTaskPanel:  # pylint: disable=no-member
                 self.femConsoleMessage(line)
 
     def _report_321_constraint_reaction_forces(self, state_index=None, dat_file_name=None):
+        if _is_ground_fem_part(self.fem_part):
+            return
         if dat_file_name is None:
             if state_index is None:
                 inp_file_name = getattr(getattr(self, "fea", None), "inp_file_name", "")
@@ -3906,6 +3324,7 @@ class FEMPartSolverTaskPanel:  # pylint: disable=no-member
         message = _remove_auto_321_static_bc_message(
             self.fea.check_prerequisites(),
             _fem_mesh_nodes(self.fea.mesh),
+            fem_part=self.fem_part,
         )
         if message:
             QtGui.QMessageBox.critical(None, "Missing prerequisite(s)", message)

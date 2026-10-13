@@ -10,7 +10,7 @@ C:\Users\<WindowsUser>\Documents\FreeCAD\Development\
 │   │   └── debug\
 │   └── src\Mod\MbDFEM\
 └── FreeCAD-LibPack\
-    └── LibPack-26.3.0-v3.5.2-x64-Debug\
+    └── LibPack-26.3.0-v3.5.5-x64-Debug\
 ```
 
 The source directory is a fork of
@@ -135,14 +135,14 @@ archive from the
 [FreeCAD-LibPack releases page](https://github.com/FreeCAD/FreeCAD-LibPack/releases):
 
 ```text
-LibPack-26.3.0-v3.5.2-x64-Debug
+LibPack-26.3.0-v3.5.5-x64-Debug
 ```
 
 Place the downloaded archive in `$LibPackRoot`, then extract it with 7-Zip. If
 the archive is a `.7z` file:
 
 ```powershell
-$Archive = Get-ChildItem $LibPackRoot -Filter "LibPack-26.3.0-v3.5.2-x64-Debug*.7z" |
+$Archive = Get-ChildItem $LibPackRoot -Filter "LibPack-26.3.0-v3.5.5-x64-Debug*.7z" |
     Select-Object -First 1
 
 if (-not $Archive) {
@@ -155,7 +155,7 @@ if (-not $Archive) {
 Locate and validate the extracted directory:
 
 ```powershell
-$LibPack = Join-Path $LibPackRoot "LibPack-26.3.0-v3.5.2-x64-Debug"
+$LibPack = Join-Path $LibPackRoot "LibPack-26.3.0-v3.5.5-x64-Debug"
 
 if (-not (Test-Path (Join-Path $LibPack "bin"))) {
     throw "Invalid LibPack directory: $LibPack"
@@ -164,207 +164,66 @@ if (-not (Test-Path (Join-Path $LibPack "bin"))) {
 
 Do not place the LibPack inside the `FreeCAD` Git checkout.
 
-## 5. Create the local CMake preset
+## 5. Configure the Windows Debug build
 
-FreeCAD supplies `debug` and `release` configure presets in
-`CMakePresets.json`. The `debug` preset uses `${sourceDir}/build/debug`. Add a
-local preset in `$Source\CMakeUserPresets.json` that inherits it:
-
-```powershell
-Set-Location $Source
-@'
-{
-    "version": 3,
-    "configurePresets": [
-        {
-            "name": "mbdfem-debug",
-            "displayName": "MbDFEM Debug (Windows LibPack)",
-            "description": "FreeCAD debug preset with the local Windows LibPack and MbDFEM enabled",
-            "inherits": "debug",
-            "generator": "Ninja",
-            "cacheVariables": {
-                "FREECAD_LIBPACK_USE": {
-                    "type": "BOOL",
-                    "value": "ON"
-                },
-                "FREECAD_LIBPACK_DIR": {
-                    "type": "PATH",
-                    "value": "C:/Users/<WindowsUser>/Documents/FreeCAD/Development/FreeCAD-LibPack/LibPack-26.3.0-v3.5.2-x64-Debug"
-                },
-                "BUILD_MBDFEM": {
-                    "type": "BOOL",
-                    "value": "ON"
-                }
-            }
-        }
-    ],
-    "buildPresets": [
-        {
-            "name": "mbdfem-debug",
-            "displayName": "MbDFEM Debug",
-            "configurePreset": "mbdfem-debug"
-        }
-    ]
-}
-'@ | Set-Content -Encoding utf8 CMakeUserPresets.json
-```
-
-Replace `<WindowsUser>` in that file:
+Use the checked-in `windows-debug` preset and setup script described in
+[the Windows setup guide](../../../docs/Setup.md#6-configure-and-build-windows-debug).
+All Windows debugger configurations use `build/debug`. From ordinary PowerShell:
 
 ```powershell
-$Preset = Get-Content -Raw CMakeUserPresets.json
-$Preset = $Preset.Replace("<WindowsUser>", $env:USERNAME)
-$Preset | Set-Content -Encoding utf8 CMakeUserPresets.json
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/build-windows-debug.ps1 `
+    -LibPack "C:\path\to\LibPack-26.3.0-v3.5.5-x64-Debug"
 ```
 
-`CMakeUserPresets.json` is intentionally ignored by FreeCAD Git because it
-contains machine-specific paths. Do not modify FreeCAD's checked-in
-`CMakePresets.json` for this workspace.
+The script initializes x64 MSVC, configures, and builds FreeCAD with MbDFEM.
+Later invocations can omit `-LibPack`, using the path saved in the CMake cache.
+A new checkout does not need a local preset or edits to shared dependency paths.
 
-Verify both presets:
+For the manual commands below, set `$Build = Join-Path $Source 'build/debug'`.
 
-```powershell
-cmake --list-presets
-cmake --list-presets=build
-```
+## 6. Use the checked-in VS Code configuration
 
-Both lists should contain `mbdfem-debug`.
-
-## 6. Create the VS Code workspace files
-
-FreeCAD ignores `.vscode`, so these files remain local to the machine. Create
-the directory:
-
-```powershell
-New-Item -ItemType Directory -Force -Path (Join-Path $Source ".vscode") | Out-Null
-```
-
-### PowerShell workspace variables
-
-Create `.vscode\workspace.ps1`:
-
-```powershell
-@'
-# Initialize variables for PowerShell terminals opened in this VS Code workspace.
-
-$global:Source = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
-$global:Root = Split-Path -Parent $global:Source
-$global:Build = Join-Path $global:Source "build\debug"
-$global:LibPack = Join-Path $global:Root "FreeCAD-LibPack\LibPack-26.3.0-v3.5.2-x64-Debug"
-
-foreach ($workspacePath in @($global:Source, $global:Build, $global:LibPack)) {
-    if (-not (Test-Path -LiteralPath $workspacePath)) {
-        Write-Warning "FreeCAD workspace path does not exist: $workspacePath"
-    }
-}
-'@ | Set-Content -Encoding utf8 .vscode\workspace.ps1
-```
-
-Every new integrated PowerShell terminal will dot-source this file. Persistent
-terminal sessions retain their existing variables; newly created terminals
-recalculate them from the workspace path.
-
-### VS Code settings
-
-Create `.vscode\settings.json`:
-
-```powershell
-@'
-{
-    "cmake.sourceDirectory": "${workspaceFolder}",
-    "cmake.useCMakePresets": "always",
-    "cmake.configurePreset": "mbdfem-debug",
-    "cmake.buildPreset": "mbdfem-debug",
-    "cmake.configureOnOpen": false,
-    "C_Cpp.default.compileCommands": "${workspaceFolder}/build/debug/compile_commands.json",
-    "terminal.integrated.profiles.windows": {
-        "PowerShell (FreeCAD Workspace)": {
-            "source": "PowerShell",
-            "args": [
-                "-NoLogo",
-                "-NoExit",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                ". '${workspaceFolder}\\.vscode\\workspace.ps1'"
-            ],
-            "overrideName": true
-        }
-    },
-    "terminal.integrated.defaultProfile.windows": "PowerShell (FreeCAD Workspace)",
-    "terminal.integrated.enablePersistentSessions": true,
-    "terminal.integrated.persistentSessionReviveProcess": "onExitAndWindowClose"
-}
-'@ | Set-Content -Encoding utf8 .vscode\settings.json
-```
-
-### Debugger launch configuration
-
-Create `.vscode\launch.json`. The PySide6 and Shiboken6 directories are needed
-in addition to the LibPack's top-level `bin` directory for a Debug launch:
-
-```powershell
-@'
-{
-    "version": "0.2.0",
-    "configurations": [
-        {
-            "name": "FreeCAD Debug",
-            "type": "cppvsdbg",
-            "request": "launch",
-            "program": "${workspaceFolder}/build/debug/bin/FreeCAD_d.exe",
-            "args": [],
-            "cwd": "${workspaceFolder}/build/debug/bin",
-            "stopAtEntry": false,
-            "environment": [
-                {
-                    "name": "PATH",
-                    "value": "C:/Users/<WindowsUser>/Documents/FreeCAD/Development/FreeCAD-LibPack/LibPack-26.3.0-v3.5.2-x64-Debug/bin;C:/Users/<WindowsUser>/Documents/FreeCAD/Development/FreeCAD-LibPack/LibPack-26.3.0-v3.5.2-x64-Debug/bin/Lib/site-packages/PySide6;C:/Users/<WindowsUser>/Documents/FreeCAD/Development/FreeCAD-LibPack/LibPack-26.3.0-v3.5.2-x64-Debug/bin/Lib/site-packages/shiboken6;${env:PATH}"
-                }
-            ],
-            "console": "internalConsole"
-        }
-    ]
-}
-'@ | Set-Content -Encoding utf8 .vscode\launch.json
-
-$Launch = Get-Content -Raw .vscode\launch.json
-$Launch = $Launch.Replace("<WindowsUser>", $env:USERNAME)
-$Launch | Set-Content -Encoding utf8 .vscode\launch.json
-```
+The repository supplies `.vscode/settings.json`, `tasks.json`, `launch.json`,
+and `c_cpp_properties.json`. Open the checkout in VS Code and use **Debug MbDFEM**
+or **Full Debug FreeCAD** to build C++ and refresh scripts before launch.
+**Fast Debug FreeCAD** refreshes scripts and caches only after the initial build.
+The default build task (`Ctrl+Shift+B`) builds all targets in `build/debug`.
 
 ## 7. Start VS Code with the x64 compiler environment
 
-The CMake Tools extension must inherit the x64 MSVC and Windows SDK environment.
-Close all VS Code windows. Open **x64 Native Tools Command Prompt for VS 2026**
-from the Windows Start menu, then start VS Code:
+The checked-in build and debugger tasks initialize MSVC themselves. For direct
+use of the CMake Tools extension, close all VS Code windows and open **Developer
+PowerShell for VS 2026**, initialize x64 tools, and set the dependency path before
+starting VS Code:
 
 ```powershell
-code "$HOME\Documents\FreeCAD\Development\FreeCAD"
+Enter-VsDevShell -VsInstallPath $env:VSINSTALLDIR -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
+$env:FREECAD_LIBPACK_DIR = $LibPack
+code $Source
 ```
 
-Use the x64 prompt, not the generic Developer PowerShell. A missing compiler
+Use x64 tools. A missing compiler
 environment causes errors such as missing `array` or `io.h`; an x86 environment
 can cause unresolved Debug runtime symbols during linking.
 
 ## 8. Configure FreeCAD
 
 In VS Code, press `Ctrl+Shift+P` and run **CMake: Configure**. Select
-`mbdfem-debug` if prompted.
+`windows-debug` if prompted.
 
 The equivalent command, run from an x64 Visual Studio developer environment,
 is:
 
 ```powershell
 Set-Location $Source
-cmake --preset mbdfem-debug
+cmake --preset windows-debug
 ```
 
 If a failed earlier configure cached a missing compiler, refresh only the build
 configuration:
 
 ```powershell
-cmake --fresh --preset mbdfem-debug
+cmake --fresh --preset windows-debug
 ```
 
 Successful output ends with:
@@ -416,7 +275,7 @@ Get-Item @(
 
 ## 10. Launch and test MbDFEM
 
-Press `F5` in VS Code and select **FreeCAD Debug** if prompted. In FreeCAD,
+Press `F5` in VS Code and select **Debug MbDFEM** if prompted. In FreeCAD,
 select **View > Workbench > MbDFEM**, then enable **View > Panels > Python
 console**.
 
@@ -488,24 +347,174 @@ MbDFEM_Doc
             └── MbDMarker22
 ```
 
+`MbDFEM::AnnuAnnuFacePair` validates its current face references during
+recomputation. At least one face must be a complete planar annulus with
+concentric circular boundaries. Both faces must be coplanar, and the selected
+annulus must be completely contained in the other face, including its holes.
+Coincident boundaries and opposite normals are allowed. When both faces are
+annular, the smaller face by area is selected (side I breaks equal-area ties).
+
+Call `MbDFEM.annuAnnuValidateGeometry(pair)` to validate immediately. It raises
+`RuntimeError` on invalid geometry and returns `annulusSide`, `center`, `axis`,
+`innerRadius`, and `outerRadius` on success. The center and outer-circle axis
+are in assembly coordinates. Optional linear and angular tolerances use model
+length units and radians respectively; negative values select OpenCASCADE's
+default tolerances. The containment Boolean uses the linear tolerance and
+ignores residual area no larger than its square. Future annular load generation
+must call the C++ `validateGeometry()` entry point before distributing loads.
+
+Joint load generation uses four role-specific C++ entry points and Python bindings:
+
+| C++ method | Python binding | Requested part |
+| --- | --- | --- |
+| `CylCylFacePair::jointHoleLoad` | `MbDFEM.cylCylJointHoleLoad` | Hole part |
+| `CylCylFacePair::jointPinLoad` | `MbDFEM.cylCylJointPinLoad` | Pin part |
+| `AnnuAnnuFacePair::jointAnnulusLoad` | `MbDFEM.annuAnnuJointAnnulusLoad` | Selected annulus part |
+| `AnnuAnnuFacePair::jointOtherAnnulusLoad` | `MbDFEM.annuAnnuJointOtherAnnulusLoad` | Opposing contact part |
+
+All four take `(pair, joint, part, nodes, participatingPairs, lower=-1,
+upper=-1, ratio=0)` in Python and reject a part with the wrong role. Face I/J
+ordering does not determine the role or the joint reaction sign. When both
+faces are annuli, the selected annulus remains the smaller by area, with I
+breaking ties. `MbDFEM.annuAnnuValidateSampledGeometry(pair, lower=-1, upper=-1,
+ratio=0)` returns the same geometry fields as current-geometry validation and
+identifies this role at the requested sample. Export uses this selection to
+dispatch to the two annular methods.
+
+Pin loading uses the common hole origin and axis, transforms the sampled hole
+face into the pin's mesh coordinates, and restricts loads to pin surface nodes
+touching that bounded face. Pin overhangs are excluded. The cylindrical load
+bases are shared: cosine-weighted transverse force, quadrant axial force,
+transverse force couples for bending, and tangential force for axial torque.
+Each component and the combined wrench must satisfy equilibrium. Export calls
+the C++ hole/pin methods directly. Invalid geometry or an infeasible cylindrical or annular
+mesh raises `RuntimeError` and stops load export rather than dropping a share.
+
+Annular pairs distribute their share of the joint force and torque on both
+parts. The role-specific methods sample the global marker-I reaction and placements,
+checks the sampled contact geometry, and transfers the moment to the annulus
+center. `nodes` is a list of `(nodeId, FreeCAD.Vector)` in the target part's mesh
+coordinates. Participating cylindrical and annular pairs share the reaction
+equally; repeated objects count once. The returned frames are common to both
+sides, and the requested part determines the reaction sign.
+
+The transverse and axial forces use four force quadrants; bending and axial
+torques use four independently oriented torque quadrants. Nodes on the other
+face are restricted to the selected annular band. Force and axial-torque
+quadrant magnitudes are signed and constant per node, with tangential directions
+varying by node for axial torque. Bending torque uses the profile
+`Fz(node) = nodeX * ForceZquadrant` in each torque quadrant, where
+`nodeX = (node.position - origin).dot(torqueXAxis)`. Thus nodes on the torque
+frame's Y axis carry zero bending force. This profile applies to both the
+selected annulus and the opposing contact face, with signed quadrant coefficients
+solved to reproduce the requested torque and zero resultant force.
+Empty quadrants are excluded from the solve. Every contribution
+and the combined wrench are checked for equilibrium; infeasible meshes raise
+`RuntimeError` and stop annular load export.
+
+Both cylindrical and annular pairs have a saved `loadCost` property. Set it
+to `"C"` to minimize the sum of squared region coefficients, or `"C2"` (the
+default) to minimize the sum of squared nodal force magnitudes. Cylindrical
+C2 weights include each node's actual force basis: cosine weights for
+transverse force, unit axial force, axial-distance/cosine weights for bending,
+and unit tangents for axial torque. The choice applies to all four components
+on both hole and pin sides. Annular C2 also includes the squared `nodeX`
+weights of the bending profile. These are magnitude objectives, not a
+surface-traction model.
+The force-frame fallback uses shifted torque crossed with the annulus axis,
+then the longer projected X/Y mesh axis of the annulus part (X wins ties).
+The torque-frame fallback uses the same mesh-axis rule.
+
+For a supplied wrench rather than sampled joint histories, call
+`MbDFEM.annuAnnuFaceLoad(pair, part, nodes, force, torque, markerOrigin)`.
+The force, torque, and marker origin are in the target part's mesh coordinates;
+the supplied torque is about `markerOrigin`. Both entry points return
+`force_quadrants`, `torque_quadrants`, diagnostic `cload_components`, and combined
+`cloads` with one record per node and DOF. Annular export uses the combined records;
+cylindrical export preserves the separate component records.
+
 Run the module's registered Python tests with the current FreeCAD Test API:
 
 ```python
 import Test
 import TestMbDFEMApp
+import TestAnnuAnnuFacePair
 
 Test.runTestsFromModule(TestMbDFEMApp)
+Test.runTestsFromModule(TestAnnuAnnuFacePair)
 ```
 
 Expected result:
 
 ```text
-Ran 2 tests
 OK
 ```
 
 The tests cover object creation, `TypeId`, placements, relationships, saving,
-closing, and reopening.
+closing, reopening, and annular face-pair geometry validation.
+
+### Animate FEM bodies together
+
+Solve and import the FEM result states for each body, then select its
+`FEMAssembly` in the MbDFEM workbench. Choose **MbDFEM > Animate FEM Results**
+or the same command in the tree context menu's **MbDFEM** submenu.
+
+Select the bodies to include, the result field, and the first/last states, then
+press **Play**. One slider and timer advance all selected bodies together;
+each body retains its own mesh and result pipeline. Only imported states
+available for every selected body are played. The panel reports unavailable
+states, and rejects results whose recorded times disagree with the linked
+MbD assembly. Bodies without imported results cannot be selected.
+
+**Shared color scale** gives the selected bodies the same fixed color range
+across the playback interval. Uncheck it for independent body ranges. Existing
+result visibility, contour, and legend settings are retained. Closing the
+panel stops playback. This command displays existing FEM solutions; it does
+not solve missing states or interpolate deformation between them.
+
+The assembly's `animationParameters` link owns an
+`MbDFEM::FEMAnimationParameters` object shown as **AnimationParameters** in the
+tree. Body selection, current state, playback range, frame rate, result field,
+shared color scale, and loop setting are saved with the document and restored
+when the panel is reopened. Numeric edits are committed before file saving,
+including while the panel remains open. Double-click **AnimationParameters**
+to open its assembly's playback panel. Existing documents gain the settings
+object when their FEM animation panel is first opened.
+
+### Simulate several FEM parts together
+
+Select an FEMAssembly (or one of its parts), then choose **MbDFEM → Simulate FEM Assembly**.
+Select the parts and a shared First/Last State range from the linked MbD simulation.
+**Write Inputs** exports the range without running CalculiX; **Solve Current State**
+solves the current state for each selected part; **Solve Range** processes every
+selected part at each state; **Import Results** imports the range from existing FRD files.
+Each part retains its own mesh, material, solver, constraints, and per-state directory.
+
+CalculiX runs sequentially in an asynchronous process. The panel shows overall
+progress, completed jobs per part, failed states, and the current job. **Stop after
+current job** retains completed results and leaves the remaining jobs pending.
+Closing the panel during a run requests the same stop; close it once the current
+job finishes. Closing the document terminates its active solver process.
+Solver output is saved to the state's calculix.log file. A failed solve retains
+previously imported results and cannot import an unchanged old FRD file.
+
+**Only missing or stale imported results** skips states with an imported result,
+matching simulation time, and no existing ASMT file freshness warning. This check
+is not a fingerprint of all analysis inputs: clear it to replace results after
+changing a mesh, material, constraint, load, or other input. **Continue after a
+failed job** allows other parts and states to finish; clear it to stop on the first
+failure. To resume a partial batch, run the same range with the missing-results
+option enabled. Review the failed states and their logs before retrying.
+
+Selections, state controls, and batch options are saved in an
+MbDFEM::FEMSimulationParameters object owned by FEMAssembly.femParameters.
+Both **SimulationParameters** and **AnimationParameters** appear under FEMAssembly
+as soon as it is created. Older files receive missing parameter objects when reopened.
+Double-click **SimulationParameters** to reopen the panel. Saving while it is open
+commits pending state edits; reopening never starts jobs automatically.
+These are separate part analyses sampled from one MbD timeline, rather than a
+combined CalculiX model with deformation-dependent contact between parts.
+After solving, use **Animate FEM Results** to play the common imported states together.
 
 ## 11. Keep the fork synchronized
 
@@ -541,10 +550,11 @@ control:
 src/Mod/MbDFEM/
 ```
 
-The following are local or generated and are intentionally ignored:
+The portable VS Code settings, debugger configurations, build tasks, and
+`tools/build-windows-debug.ps1` also belong under source control. The following
+are local or generated and are intentionally ignored:
 
 ```text
-.vscode/
 CMakeUserPresets.json
 build/
 ```

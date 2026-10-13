@@ -19,9 +19,9 @@ public:
     FEMPart();
     ~FEMPart() override = default;
     App::PropertyLink mbdItem;
-    App::PropertyLinkList joints;
-    App::PropertyLinkList motions;
-    App::PropertyLinkList actions;
+    App::PropertyLinkList joints;   // List of joints associated with the FEM part
+    App::PropertyLinkList motions;  // List of motions associated with the FEM part
+    App::PropertyLinkList actions;  // List of actions associated with the FEM part
     App::PropertyLink mesh;
     App::PropertyLink solver;
     App::PropertyLinkList results;
@@ -29,11 +29,13 @@ public:
 
     App::DocumentObjectExecReturn* execute() override;
     PyObject* getPyObject() override;
-    App::DocumentObject* getSubObject(const char* subname,
-                                      PyObject** pyObj = nullptr,
-                                      Base::Matrix4D* mat = nullptr,
-                                      bool transform = true,
-                                      int depth = 0) const override;
+    App::DocumentObject* getSubObject(
+        const char* subname,
+        PyObject** pyObj = nullptr,
+        Base::Matrix4D* mat = nullptr,
+        bool transform = true,
+        int depth = 0
+    ) const override;
     int setElementVisible(const char* element, bool visible) override;
     int isElementVisible(const char* element) const override;
 

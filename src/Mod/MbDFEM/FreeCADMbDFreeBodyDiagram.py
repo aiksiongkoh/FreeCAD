@@ -599,11 +599,23 @@ def _rotation_from_y_axis(direction):
     return App.Rotation(axis, degrees(acos(dot)))
 
 
+def _global_placement(part):
+    root = part
+    path = []
+    parent = root.getParentGeoFeatureGroup()
+    while parent is not None:
+        path.insert(0, root.Name)
+        root = parent
+        parent = root.getParentGeoFeatureGroup()
+    subname = ".".join(path) + "." if path else ""
+    return part.getGlobalPlacementOf(part, root, subname)
+
+
 def _diagram_vectors(part, assembly, sample):
     vectors = []
     mass_marker = part.getMassMarker() if hasattr(part, "getMassMarker") else None
     if mass_marker is not None:
-        origin = part.getGlobalPlacement().multVec(mass_marker.Placement.Base)
+        origin = _global_placement(part).multVec(mass_marker.Placement.Base)
         mass = float(getattr(mass_marker, "mass", 0.0))
         vectors.append(
             _DiagramVector("force", origin, _dalembert_force(part, mass_marker, mass, sample))
@@ -614,7 +626,7 @@ def _diagram_vectors(part, assembly, sample):
         vectors.append(_DiagramVector("gravity", origin, _gravity_force(assembly, mass)))
 
     for joint, marker, sign in _part_joints(part, assembly):
-        origin = part.getGlobalPlacement().multVec(marker.Placement.Base)
+        origin = _global_placement(part).multVec(marker.Placement.Base)
         force = _sample_vector(joint, _FORCE_PROPERTIES, sample) * sign
         torque = _sample_vector(joint, _TORQUE_PROPERTIES, sample) * sign
         vectors.append(_DiagramVector("force", origin, force))
@@ -631,7 +643,7 @@ def _dalembert_force(part, mass_marker, mass, sample):
     alpha = _sample_vector(part, _ALPHA_PROPERTIES, sample)
     omega = _sample_vector(part, _OMEGA_PROPERTIES, sample)
     radius = (
-        part.getGlobalPlacement().Rotation.multVec(mass_marker.Placement.Base)
+        _global_placement(part).Rotation.multVec(mass_marker.Placement.Base)
         * _DOCUMENT_LENGTH_TO_SI_LENGTH
     )
     com_acceleration = acceleration + alpha.cross(radius) + omega.cross(omega.cross(radius))
@@ -642,7 +654,7 @@ def _dalembert_torque(part, mass_marker, sample):
     inertias = getattr(mass_marker, "principalInertias", App.Vector())
     alpha = _sample_vector(part, _ALPHA_PROPERTIES, sample)
     omega = _sample_vector(part, _OMEGA_PROPERTIES, sample)
-    rotation = part.getGlobalPlacement().Rotation.multiply(mass_marker.Placement.Rotation)
+    rotation = _global_placement(part).Rotation.multiply(mass_marker.Placement.Rotation)
     inertia_alpha = _inertia_vector(rotation, inertias, alpha)
     angular_momentum = _inertia_vector(rotation, inertias, omega)
     return (inertia_alpha + omega.cross(angular_momentum)) * -1.0

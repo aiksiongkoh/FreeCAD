@@ -6,11 +6,13 @@
 #include <Gui/Application.h>
 
 #include "ViewProviderFEMAssembly.h"
+#include "ViewProviderFEMAnimationParameters.h"
+#include "ViewProviderFEMSimulationParameters.h"
 #include "ViewProviderFEMItem.h"
 #include "ViewProviderFEMPart.h"
 #include "ViewProviderFEMResultsFolder.h"
 #ifdef MBDFEM_WITH_VTK
-#include "ViewProviderFEMPostPipeline.h"
+# include "ViewProviderFEMPostPipeline.h"
 #endif
 #include "ViewProviderMbDAction.h"
 #include "ViewProviderMbDAnimationParameters.h"
@@ -63,6 +65,8 @@ PyMOD_INIT_FUNC(MbDFEMGui)
     }
 
     MbDFEMGui::ViewProviderFEMAssembly::init();
+    MbDFEMGui::ViewProviderFEMAnimationParameters::init();
+    MbDFEMGui::ViewProviderFEMSimulationParameters::init();
     MbDFEMGui::ViewProviderFEMItem::init();
     MbDFEMGui::ViewProviderFEMPart::init();
     MbDFEMGui::ViewProviderFEMResultsFolder::init();

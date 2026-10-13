@@ -63,10 +63,11 @@ bool ViewProviderMbDPart::canAddToSceneGraph() const
 {
     auto* part = getObject<MbDFEM::MbDPart>();
     auto* parent = part ? App::GeoFeatureGroupExtension::getGroupOfObject(part) : nullptr;
-    const int parentElementVisible =
-        parent && part ? parent->isElementVisible(part->getNameInDocument()) : -1;
-    return parentElementVisible != 0 && (!part || part->Visibility.getValue()) && Visibility.getValue()
-        && PartGui::ViewProviderPart::canAddToSceneGraph();
+    const int parentElementVisible = parent && part
+        ? parent->isElementVisible(part->getNameInDocument())
+        : -1;
+    return parentElementVisible != 0 && (!part || part->Visibility.getValue())
+        && Visibility.getValue() && PartGui::ViewProviderPart::canAddToSceneGraph();
 }
 
 SoGroup* ViewProviderMbDPart::getChildRoot() const
@@ -116,10 +117,12 @@ std::vector<App::DocumentObject*> ViewProviderMbDPart::claimChildren3D() const
     return children;
 }
 
-bool ViewProviderMbDPart::getDetailPath(const char* subname,
-                                        SoFullPath* path,
-                                        bool append,
-                                        SoDetail*& det) const
+bool ViewProviderMbDPart::getDetailPath(
+    const char* subname,
+    SoFullPath* path,
+    bool append,
+    SoDetail*& det
+) const
 {
     if (subname && std::strchr(subname, '.')
         && delegateSubobjectDetailPath(this, subname, path, append, det)) {
@@ -178,7 +181,8 @@ void ViewProviderMbDPart::setupContextMenu(QMenu* menu, QObject* receiver, const
 {
     addMbDFEMContextMenuCommands(
         menu,
-        {"MbDFEM_CreateMbDMarker", "MbDFEM_CreateMbDJoint", "MbDFEM_FreeBodyDiagram"});
+        {"MbDFEM_CreateMbDMarker", "MbDFEM_CreateMbDJoint", "MbDFEM_GroundFaces", "MbDFEM_FreeBodyDiagram"}
+    );
 
     if (auto* otherMenu = addOtherContextMenu(menu)) {
         PartGui::ViewProviderPart::setupContextMenu(otherMenu, receiver, member);
@@ -211,7 +215,8 @@ void ViewProviderMbDPart::updateMarkerVisibility()
         }
     }
     auto* massMarker = part->getMassMarker();
-    auto* viewProvider = massMarker ? Gui::Application::Instance->getViewProvider(massMarker) : nullptr;
+    auto* viewProvider = massMarker ? Gui::Application::Instance->getViewProvider(massMarker)
+                                    : nullptr;
     auto* markerViewProvider = freecad_cast<ViewProviderMbDMarker*>(viewProvider);
     if (markerViewProvider) {
         markerViewProvider->updateTriadVisibility();

@@ -46,6 +46,9 @@ ui_*.h
 !/.vscode/
 /.vscode/*
 !/.vscode/launch.json
+!/.vscode/tasks.json
+!/.vscode/settings.json
+!/.vscode/c_cpp_properties.json
 /ALL_BUILD.dir/
 /Mod/
 /ZERO_CHECK.dir/
@@ -85,5 +88,9 @@ tsupdate_stdout.log
 /spooles.out
 /chats/
 mbdfem_frame.json
-/data/examples/RealisticPendulum/MbDFEM/Case001/*/Frame*/calculix.*
-/data/examples/RealisticPendulum/MbDFEM/Case001/*/Frame*/spooles.out
+/data/examples/**/Case*/**
+
+# Local pendulum experiments and startup helpers
+/data/examples/RealisticPendulum/RealisticPendulumTemp*.FCStd
+/data/examples/RealisticPendulum/startup.py
+/data/examples/RealisticPendulum/startup.FCMacro

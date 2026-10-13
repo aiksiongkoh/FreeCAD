@@ -25,6 +25,7 @@ public:
     App::PropertyLinkList motions;
     App::PropertyLinkList actions;
     App::PropertyLink femParameters;
+    App::PropertyLink animationParameters;
 
     App::DocumentObjectGroup* getPartsFolder() const;
     App::DocumentObjectGroup* getJointsFolder() const;
@@ -38,15 +39,21 @@ public:
     App::DocumentObjectGroup* ensureMotionsFolder();
     App::DocumentObjectGroup* ensureActionsFolder();
     void ensureCategoryFolders();
+    void ensureParameterObjects();
+
+    void setupObject() override;
+    void onDocumentRestored() override;
 
     App::DocumentObjectExecReturn* execute() override;
     int setElementVisible(const char* element, bool visible) override;
     int isElementVisible(const char* element) const override;
-    App::DocumentObject* getSubObject(const char* subname,
-                                      PyObject** pyObj = nullptr,
-                                      Base::Matrix4D* mat = nullptr,
-                                      bool transform = true,
-                                      int depth = 0) const override;
+    App::DocumentObject* getSubObject(
+        const char* subname,
+        PyObject** pyObj = nullptr,
+        Base::Matrix4D* mat = nullptr,
+        bool transform = true,
+        int depth = 0
+    ) const override;
 
     const char* getViewProviderName() const override
     {

@@ -38,6 +38,45 @@ class MbDFEMGuiViewProviderTest(unittest.TestCase):
             if App.getDocument(self.document.Name):
                 App.closeDocument(self.document.Name)
 
+    def test_ground_faces_command_converts_selected_faces(self):
+        import FreeCADMbDGroundFaces
+        import Part
+
+        assembly = self.document.addObject("MbDFEM::MbDAssembly", "Assembly")
+        part = self.document.addObject("MbDFEM::MbDPart", "Part")
+        part.Shape = Part.makeBox(10, 20, 30)
+        part.Label = "Ground support"
+        assembly.addPart(part)
+        part.ViewObject.ShapeColor = (0.2, 0.4, 0.6)
+        part.ViewObject.Transparency = 35
+        command = FreeCADMbDGroundFaces.GroundFacesCommand()
+        self.Gui.Selection.clearSelection()
+        self.assertFalse(command.IsActive())
+        self.Gui.Selection.addSelection(part, "Edge1")
+        self.assertFalse(command.IsActive())
+        self.Gui.Selection.clearSelection()
+        self.Gui.Selection.addSelection(part, "Face1")
+        self.Gui.Selection.addSelection(part, "Face2")
+        self.assertTrue(command.IsActive())
+        self.assertIn("MbDFEM_GroundFaces", self.Gui.listCommands())
+        self.Gui.runCommand("MbDFEM_GroundFaces")
+        self.Gui.updateGui()
+        ground = assembly.fixedparts[0]
+        self.assertEqual(ground.TypeId, "MbDFEM::MbDGroundPart")
+        self.assertEqual(ground.Label, "Ground support")
+        self.assertEqual(ground.ViewObject.Transparency, 35)
+        self.assertEqual(ground.groundFaces, [(ground, ("Face1", "Face2"))])
+        self.assertEqual(self.Gui.Selection.getSelection(), [ground])
+        self.assertIsNone(self.document.getObject(ground.Name + "_Face1"))
+        self.assertNotIn(ground, ground.OutList)
+        self.assertNotIn("Invalid", ground.State)
+        # Test the tree-qualified selection path as well as a direct 3D pick.
+        self.Gui.Selection.clearSelection()
+        self.Gui.Selection.addSelection(assembly, f"{assembly.getFixedPartsFolder().Name}.{ground.Name}.Face3")
+        self.assertTrue(command.IsActive())
+        command.Activated()
+        self.assertEqual(ground.groundFaces, [(ground, ("Face1", "Face2", "Face3"))])
+
     def test_view_providers_expose_expected_children_and_child_root(self):
         assembly = self.document.addObject("MbDFEM::MbDAssembly", "Assembly")
         part = self.document.addObject("MbDFEM::MbDPart", "Part")
@@ -217,7 +256,12 @@ class MbDFEMGuiViewProviderTest(unittest.TestCase):
         self.assertIsNotNone(fem_assembly.Origin)
         self.assertFalse(fem_assembly.Origin.ViewObject.ShowInTree)
         fem_assembly.Origin.ViewObject.ShowInTree = True
-        fem_folders = fem_assembly.ViewObject.claimChildren()
+        fem_children = fem_assembly.ViewObject.claimChildren()
+        self.assertEqual(
+            fem_children[:2],
+            [fem_assembly.femParameters, fem_assembly.animationParameters],
+        )
+        fem_folders = fem_children[2:]
         self.assertFalse(fem_assembly.Origin.ViewObject.ShowInTree)
         fem_assembly.Origin.ViewObject.ShowInTree = True
         self.assertEqual(
@@ -231,7 +275,7 @@ class MbDFEMGuiViewProviderTest(unittest.TestCase):
         )
         self.assertTrue(all(folder.TypeId.startswith("MbDFEM::FEM") for folder in fem_folders))
         self.assertTrue(all(assembly not in folder.InList for folder in fem_folders))
-        self.assertEqual(fem_assembly.Group[:4], fem_folders)
+        self.assertEqual(fem_assembly.Group[2:6], fem_folders)
         fem_parts = fem_folders[0].Group
         self.assertEqual([fem_part.TypeId for fem_part in fem_parts], ["MbDFEM::FEMPart"] * 2)
         self.assertEqual([fem_part.mbdItem for fem_part in fem_parts], [fixed_part, moving_part])
@@ -790,6 +834,7 @@ class MbDFEMGuiViewProviderTest(unittest.TestCase):
             self.assertEqual(calls["working_dir"], str(working_dir))
             self.assertEqual(calls["base_name"], FreeCADMbDBackend.CALCULIX_BASE_NAME)
             self.assertEqual(calls["inp_file_name"], str(working_dir / "calculix.inp"))
+            self.assertNotIn("setup_ccx", calls)
             self.assertEqual(result.MbDFEMStateIndex, 1)
             self.assertAlmostEqual(result.MbDFEMStateTime, 0.25)
             self.assertEqual(fem_part.results, [result])
@@ -1423,6 +1468,718 @@ class MbDFEMGuiViewProviderTest(unittest.TestCase):
             self.assertTrue(restored.visual.ViewObject.Visibility)
             self.assertFalse(restored.visual.ViewObject.ShowLegend)
 
+    def _make_fem_animation_model(self):
+        import Fem
+        from femobjects import result_mechanical
+        import FreeCADMbDFEMResultsPanel as Results
+
+        mbd = self.document.addObject("MbDFEM::MbDAssembly", "Assembly")
+        mbd.ensureAnimationParameters()
+        mbd.times = [0.0, 0.1, 0.2, 0.3]
+        fem = self.document.addObject("MbDFEM::FEMAssembly", "FEMAssembly")
+        fem.mbdItem = mbd
+        parts = []
+        for body in range(3):
+            motion = self.document.addObject("MbDFEM::MbDPart", f"Body{body}")
+            mbd.addPart(motion)
+            motion.xs = [100 * body + 10 * (body + 1) * state for state in range(4)]
+            motion.ys = motion.zs = [0.0] * 4
+            motion.bryxs = motion.bryys = [0.0] * 4
+            motion.bryzs = [0.0, 0.1, 0.2, 0.3]
+            part = self.document.addObject("MbDFEM::FEMPart", f"FEMBody{body}")
+            part.mbdItem = motion
+            part.ensureResultsFolder()
+            mesh = Fem.FemMesh()
+            size = 10 * (body + 1)
+            for xyz in ((0, 0, 0), (size, 0, 0), (0, size, 0), (0, 0, size)):
+                mesh.addNode(*xyz)
+            mesh.addVolume([1, 2, 3, 4])
+            for state in range(4):
+                result = self.document.addObject("Fem::FemResultObjectPython", f"Result{body}_{state}")
+                result_mechanical.ResultMechanical(result)
+                result.Mesh = self.document.addObject("Fem::FemMeshObject", f"Mesh{body}_{state}")
+                result.Mesh.FemMesh = mesh
+                result.NodeNumbers = [1, 2, 3, 4]
+                result.vonMises = [(body + 1) * (state + 1) * node for node in range(1, 5)]
+                result.DisplacementVectors = [App.Vector(0, 0, state * 0.01)] * 4
+                result.DisplacementLengths = [state * 0.01] * 4
+                Results._assign_result_for_state(part, state, result)
+            parts.append(part)
+        for part in parts:
+            fem.addObject(part)
+        fem.parts = parts
+        self.document.recompute()
+        return fem, parts
+
+    def test_fem_assembly_creates_parameter_tree_children_before_panels_open(self):
+        fem = self.document.addObject("MbDFEM::FEMAssembly", "FEMAssembly")
+        simulation = fem.femParameters
+        animation = fem.animationParameters
+        self.assertEqual(simulation.TypeId, "MbDFEM::FEMSimulationParameters")
+        self.assertEqual(animation.TypeId, "MbDFEM::FEMAnimationParameters")
+        self.assertEqual(simulation.Label, "SimulationParameters")
+        self.assertEqual(animation.Label, "AnimationParameters")
+        self.assertFalse(simulation.settingsInitialized)
+        self.assertFalse(animation.settingsInitialized)
+        self.assertIn(simulation, fem.Group)
+        self.assertIn(animation, fem.Group)
+        self.assertEqual(fem.ViewObject.claimChildren()[:2], [simulation, animation])
+        self.document.recompute()
+        self.assertIs(fem.femParameters, simulation)
+        self.assertIs(fem.animationParameters, animation)
+        self.assertEqual(len([obj for obj in self.document.Objects
+                              if obj.TypeId in (simulation.TypeId, animation.TypeId)]), 2)
+
+    def test_fem_assembly_restores_missing_parameter_tree_children_without_duplicates(self):
+        fem = self.document.addObject("MbDFEM::FEMAssembly", "FEMAssembly")
+        name = fem.Name
+        old_parameters = [fem.femParameters.Name, fem.animationParameters.Name]
+        fem.femParameters = None
+        fem.animationParameters = None
+        for parameter in old_parameters:
+            self.document.removeObject(parameter)
+        # Represent an older file saved before either panel had been opened.
+        self.assertIsNone(fem.femParameters)
+        self.assertIsNone(fem.animationParameters)
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / "OldFEMAssembly.FCStd")
+            self.document.saveAs(path)
+            App.closeDocument(self.document.Name)
+            self.document = App.openDocument(path)
+            restored = self.document.getObject(name)
+            simulation = restored.femParameters
+            animation = restored.animationParameters
+            self.assertEqual(simulation.TypeId, "MbDFEM::FEMSimulationParameters")
+            self.assertEqual(animation.TypeId, "MbDFEM::FEMAnimationParameters")
+            self.assertEqual(restored.ViewObject.claimChildren()[:2], [simulation, animation])
+            self.assertIn(simulation, restored.Group)
+            self.assertIn(animation, restored.Group)
+            simulation.startState = animation.startFrame = 10
+            simulation.endState = animation.endFrame = 40
+            simulation.settingsInitialized = animation.settingsInitialized = True
+            parameter_names = [simulation.Name, animation.Name]
+            self.document.save()
+            App.closeDocument(self.document.Name)
+            self.document = App.openDocument(path)
+            restored = self.document.getObject(name)
+            self.assertEqual([restored.femParameters.Name, restored.animationParameters.Name], parameter_names)
+            self.assertEqual(restored.femParameters.endState, 40)
+            self.assertEqual(restored.animationParameters.endFrame, 40)
+            self.assertEqual(len([obj for obj in self.document.Objects if obj.TypeId in
+                                  ("MbDFEM::FEMSimulationParameters", "MbDFEM::FEMAnimationParameters")]), 2)
+
+    def _wait_fem_simulation(self, panel, timeout=10000):
+        from time import monotonic
+        from PySide import QtCore, QtWidgets
+
+        deadline = monotonic() + timeout / 1000
+        while panel._running and monotonic() < deadline:
+            QtWidgets.QApplication.processEvents(QtCore.QEventLoop.AllEvents, 20)
+        self.assertFalse(panel._running, panel.status_label.text())
+
+    def test_fem_simulation_queue_uses_one_pose_per_state_and_current_results(self):
+        from unittest.mock import patch
+        import FreeCADMbDFEMSimulation as Simulation
+        import FreeCADMbDFEMResultsPanel as Results
+
+        fem, parts = self._make_fem_animation_model()
+        controller = Simulation.FEMSimulationController(fem)
+        jobs = controller.jobs(parts[:2], [1, 2])
+        self.assertEqual(jobs, [(parts[0], 1), (parts[1], 1), (parts[0], 2), (parts[1], 2)])
+        with patch.object(controller.motion, "setFrame", wraps=controller.motion.setFrame) as move:
+            for part, state in jobs:
+                controller.apply_state(state)
+                self.assertEqual(part.Placement.Base, part.mbdItem.Placement.Base)
+            self.assertEqual(move.call_count, 2)
+        with patch.object(Simulation.Backend, "fem_files_freshness_warning", return_value=""):
+            self.assertEqual(controller.jobs(parts[:2], [1, 2], True), [])
+            Results._result_for_state(parts[1], 2).MbDFEMStateTime = 9.0
+            self.assertEqual(controller.jobs(parts[:2], [1, 2], True), [(parts[1], 2)])
+        with patch.object(Simulation.Backend, "fem_files_freshness_warning", return_value="Stale"):
+            self.assertEqual(controller.jobs(parts[:2], [1], True), [(parts[0], 1), (parts[1], 1)])
+        with self.assertRaises(ValueError):
+            controller.jobs([], [1])
+        with self.assertRaises(ValueError):
+            controller.jobs(parts, [4])
+        foreign = self.document.addObject("MbDFEM::FEMPart", "Foreign")
+        with self.assertRaises(ValueError):
+            controller.jobs([foreign], [1])
+
+    def test_fem_simulation_write_queue_stops_between_jobs(self):
+        from unittest.mock import patch
+        import FreeCADMbDFEMSimulation as Simulation
+
+        fem, parts = self._make_fem_animation_model()
+        panel = Simulation.FEMSimulationTaskPanel(fem)
+        written = []
+
+        def write(part, state, **kwargs):
+            written.append((part, state))
+            panel._stop()
+
+        try:
+            panel.first_spin.setValue(1)
+            panel.last_spin.setValue(2)
+            with patch.object(panel.controller, "tools", side_effect=write):
+                panel._start("write")
+                self._wait_fem_simulation(panel)
+            self.assertEqual(written, [(parts[0], 1)])
+            self.assertEqual(panel._succeeded, 1)
+            self.assertIn("5 pending", panel.status_label.text())
+            self.assertTrue(panel.action_buttons[0].isEnabled())
+        finally:
+            panel.reject()
+
+    def test_fem_simulation_import_queue_retains_success_and_failure_policy(self):
+        from unittest.mock import patch
+        import FreeCADMbDFEMSimulation as Simulation
+
+        fem, parts = self._make_fem_animation_model()
+        panel = Simulation.FEMSimulationTaskPanel(fem)
+        imported = []
+
+        def import_result(part, state):
+            if part == parts[1]:
+                raise RuntimeError("Missing FRD")
+            imported.append((part, state))
+
+        try:
+            panel.first_spin.setValue(1)
+            panel.last_spin.setValue(2)
+            panel.missing_check.setChecked(False)
+            with patch.object(panel, "_import_result", side_effect=import_result):
+                panel._start("import")
+                self._wait_fem_simulation(panel)
+                self.assertEqual(panel._succeeded, 4)
+                self.assertEqual(panel._failures, 2)
+                self.assertEqual(imported, [(parts[0], 1), (parts[2], 1), (parts[0], 2), (parts[2], 2)])
+                panel.continue_check.setChecked(False)
+                panel._start("import")
+                self._wait_fem_simulation(panel)
+                self.assertEqual(panel._succeeded, 1)
+                self.assertEqual(panel._failures, 1)
+                self.assertIn("4 pending", panel.status_label.text())
+        finally:
+            panel.reject()
+
+    def test_fem_simulation_settings_save_pending_edits_and_reopen(self):
+        import FreeCADMbDFEMSimulation as Simulation
+
+        fem, parts = self._make_fem_animation_model()
+        panel = Simulation.FEMSimulationTaskPanel(fem)
+        try:
+            settings = fem.femParameters
+            self.assertEqual(settings.TypeId, "MbDFEM::FEMSimulationParameters")
+            self.assertIn(settings, fem.Group)
+            self.assertIn(settings, fem.ViewObject.claimChildren())
+            panel.body_checks[1][1].setChecked(False)
+            panel.missing_check.setChecked(False)
+            panel.continue_check.setChecked(False)
+            panel.current_spin.setValue(2)
+            panel.first_spin.lineEdit().setText("0")
+            panel.last_spin.lineEdit().setText("2")
+            name = fem.Name
+            selected = [parts[0].Name, parts[2].Name]
+            with tempfile.TemporaryDirectory() as directory:
+                path = str(Path(directory) / "AssemblySimulation.FCStd")
+                self.document.saveAs(path)
+                self.assertEqual(settings.startState, 0)
+                self.assertEqual(settings.endState, 2)
+                panel.reject()
+                App.closeDocument(self.document.Name)
+                self.document = App.openDocument(path)
+                restored = self.document.getObject(name)
+                reopened = Simulation.FEMSimulationTaskPanel(restored)
+                try:
+                    self.assertEqual([part.Name for part in restored.femParameters.selectedParts], selected)
+                    self.assertEqual(reopened.current_spin.value(), 2)
+                    self.assertEqual(reopened.first_spin.value(), 0)
+                    self.assertEqual(reopened.last_spin.value(), 2)
+                    self.assertFalse(reopened.missing_check.isChecked())
+                    self.assertFalse(reopened.continue_check.isChecked())
+                    self.assertFalse(reopened._running)
+                    for part, check in reopened.body_checks:
+                        check.setChecked(False)
+                    reopened.accept()
+                    empty = Simulation.FEMSimulationTaskPanel(restored)
+                    try:
+                        self.assertFalse(any(check.isChecked() for part, check in empty.body_checks))
+                    finally:
+                        empty.reject()
+                finally:
+                    reopened.reject()
+        finally:
+            if panel._observing:
+                panel.reject()
+
+    def test_fem_workbench_context_menu_without_init_module_globals(self):
+        from unittest.mock import patch
+
+        fem, parts = self._make_fem_animation_model()
+        self.Gui.Selection.clearSelection()
+        self.Gui.Selection.addSelection(parts[0])
+        workbench = self.Gui.getWorkbench("MbDFEMWorkbench")
+        menus = []
+        with patch.object(workbench, "appendContextMenu", side_effect=lambda *args: menus.append(args)):
+            # FreeCAD executes InitGui.py as a script and clears its startup globals.
+            with patch.dict(workbench.ContextMenu.__globals__, {}, clear=True):
+                workbench.ContextMenu("Tree")
+        self.assertEqual(menus, [("MbDFEM", ["MbDFEM_AnimateFEMResults", "MbDFEM_SimulateFEMAssembly"])])
+        self.Gui.Selection.clearSelection()
+        with patch.object(workbench, "appendContextMenu") as append:
+            with patch.dict(workbench.ContextMenu.__globals__, {}, clear=True):
+                workbench.ContextMenu("Tree")
+            append.assert_called_once()
+
+    def test_fem_simulation_command_and_parameters_open_owner(self):
+        from unittest.mock import patch
+        import FreeCADMbDFEMSimulation as Simulation
+
+        fem, parts = self._make_fem_animation_model()
+        settings = Simulation.ensure_simulation_parameters(fem)
+        self.document.recompute()
+        self.Gui.Selection.clearSelection()
+        self.Gui.Selection.addSelection(settings)
+        self.assertIs(Simulation.SimulateFEMAssemblyCommand.active_assembly(), fem)
+        self.assertIn("MbDFEM_SimulateFEMAssembly", self.Gui.listCommands())
+        with patch.object(Simulation, "show_simulation_task_panel") as show:
+            self.assertTrue(settings.ViewObject.doubleClicked())
+            show.assert_called_once_with(fem)
+            show.reset_mock()
+            self.Gui.runCommand("MbDFEM_SimulateFEMAssembly", 0)
+            show.assert_called_once_with(fem)
+
+    def test_fem_simulation_process_failure_keeps_existing_results(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        import FreeCADMbDFEMSimulation as Simulation
+        import FreeCADMbDFEMResultsPanel as Results
+
+        fem, parts = self._make_fem_animation_model()
+        panel = Simulation.FEMSimulationTaskPanel(fem)
+        before = Results._result_for_state(parts[0], 1)
+        try:
+            panel.body_checks[1][1].setChecked(False)
+            panel.body_checks[2][1].setChecked(False)
+            panel.missing_check.setChecked(False)
+            panel.current_spin.setValue(1)
+            with tempfile.TemporaryDirectory() as directory:
+                inp = Path(directory) / "calculix.inp"
+                inp.write_text("unused", encoding="utf-8")
+                inp.with_suffix(".frd").write_text("old result", encoding="utf-8")
+                tools = SimpleNamespace(
+                    inp_file_name=str(inp), ccx_binary=str(Path(directory) / "missing-ccx"),
+                    ccx_binary_present=True, setup_ccx=lambda: None,
+                    ccx_prefs=App.ParamGet("User parameter:BaseApp/Preferences/Mod/Fem/Ccx"),
+                )
+                with patch.object(panel.controller, "tools", return_value=tools):
+                    panel._start("solve", current=True)
+                    self._wait_fem_simulation(panel)
+                self.assertEqual(panel._failures, 1)
+                self.assertEqual(panel._succeeded, 0)
+                self.assertIs(Results._result_for_state(parts[0], 1), before)
+                self.assertEqual(inp.with_suffix(".frd").read_text(), "old result")
+        finally:
+            panel.reject()
+
+    def test_fem_simulation_document_close_detaches_observer(self):
+        import FreeCADMbDFEMSimulation as Simulation
+
+        fem, parts = self._make_fem_animation_model()
+        panel = Simulation.FEMSimulationTaskPanel(fem)
+        panel.missing_check.setChecked(False)
+        panel._start("import")
+        name = self.document.Name
+        App.closeDocument(name)
+        self.document = App.newDocument(name)
+        self.assertTrue(panel._closed)
+        self.assertFalse(panel._observing)
+        self.assertFalse(panel._timer.isActive())
+        with tempfile.TemporaryDirectory() as directory:
+            self.document.saveAs(str(Path(directory) / "Replacement.FCStd"))
+
+    def test_fem_simulation_real_calculix_solves_two_parts_and_two_states(self):
+        import shutil
+        from unittest.mock import patch
+        import ObjectsFem
+        import FreeCADMbDFEMSimulation as Simulation
+        import FreeCADMbDFEMResultsPanel as Results
+
+        ccx = Path(App.getHomePath()) / "bin" / ("ccx.exe" if sys.platform == "win32" else "ccx")
+        if not ccx.is_file():
+            found = shutil.which("ccx")
+            if not found:
+                self.skipTest("CalculiX executable not available")
+            ccx = Path(found)
+        fem, parts = self._make_fem_animation_model()
+        for part in parts[:2]:
+            part.mesh = Results._result_for_state(part, 0).Mesh
+            import Fem
+
+            mesh = Fem.FemMesh()
+            for number, point in part.mesh.FemMesh.Nodes.items():
+                mesh.addNode(point.x, point.y, point.z, number)
+            # FreeCAD exports the tetrahedron using its own node-order convention.
+            mesh.addVolume([1, 3, 2, 4])
+            part.mesh.FemMesh = mesh
+            part.solver = ObjectsFem.makeSolverCalculiXCcxTools(self.document, part.Name + "Solver")
+            part.addObject(part.solver)
+            material = ObjectsFem.makeMaterialSolid(self.document, part.Name + "Material")
+            material.Material = {"Name": "Steel", "YoungsModulus": "210000 MPa",
+                                 "PoissonRatio": "0.3", "Density": "7850 kg/m^3"}
+            part.addObject(material)
+        self.document.recompute()
+        panel = Simulation.FEMSimulationTaskPanel(fem)
+        panel.body_checks[2][1].setChecked(False)
+        panel.missing_check.setChecked(False)
+        panel.first_spin.setValue(1)
+        panel.last_spin.setValue(2)
+        old = {part.Name: Results._result_for_state(part, 1).Name for part in parts[:2]}
+        prefs = App.ParamGet("User parameter:BaseApp/Preferences/Mod/Fem/Ccx")
+        binary = prefs.GetString("ccxBinaryPath", "")
+        prefs.SetString("ccxBinaryPath", str(ccx))
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                def working_dir(part, state):
+                    path = Path(directory) / part.Name / f"Frame{state:06d}"
+                    path.mkdir(parents=True, exist_ok=True)
+                    return path
+
+                with patch.object(Simulation.Backend, "default_calculix_working_dir", side_effect=working_dir):
+                    panel._start("solve")
+                    self._wait_fem_simulation(panel, timeout=60000)
+                    if panel._failures:
+                        for log in Path(directory).rglob("calculix.log"):
+                            App.Console.PrintError(f"{log}:\n{log.read_text(errors='replace')}\n")
+                    self.assertEqual(panel._failures, 0, panel.status_label.text())
+                    self.assertEqual(panel._succeeded, 4)
+                    for part in parts[:2]:
+                        self.assertNotEqual(Results._result_for_state(part, 1).Name, old[part.Name])
+                        for state in (1, 2):
+                            result = Results._result_for_state(part, state)
+                            self.assertEqual(result.MbDFEMStateIndex, state)
+                            self.assertAlmostEqual(result.MbDFEMStateTime, fem.mbdItem.times[state])
+                            self.assertTrue(result.NodeNumbers)
+                            self.assertTrue(working_dir(part, state).joinpath("calculix.frd").is_file())
+                            self.assertTrue(working_dir(part, state).joinpath("calculix.log").is_file())
+                    panel._start("import")
+                    self._wait_fem_simulation(panel)
+                    self.assertEqual(panel._failures, 0)
+                    self.assertEqual(panel._succeeded, 4)
+                    launch = panel._launch
+
+                    def stop_after_launch(*args):
+                        launch(*args)
+                        self.assertFalse(panel.accept())
+                        self.assertTrue(panel._stop_requested)
+
+                    with patch.object(panel, "_launch", side_effect=stop_after_launch):
+                        panel._start("solve")
+                        self._wait_fem_simulation(panel, timeout=60000)
+                    self.assertEqual(panel._succeeded, 1)
+                    self.assertEqual(panel._failures, 0)
+                    self.assertIn("3 pending", panel.status_label.text())
+        finally:
+            prefs.SetString("ccxBinaryPath", binary)
+            if panel._running:
+                panel._shutdown()
+            else:
+                panel.reject()
+
+    def test_fem_assembly_animation_updates_three_independent_pipelines(self):
+        from unittest.mock import patch
+        import FreeCADMbDFEMAnimation as Animation
+        import FreeCADMbDFEMResultsPanel as Results
+
+        fem, parts = self._make_fem_animation_model()
+        controller = Animation.FEMAnimationController(fem)
+        # Explicit state metadata must win over result-list order.
+        parts[0].results = list(reversed(parts[0].results))
+        controller.set_parts(parts)
+        self.assertEqual(controller.states, [0, 1, 2, 3])
+        controller.prepare_display("von Mises Stress", True, 1, 3)
+        with patch.object(controller.motion, "setFrame", wraps=controller.motion.setFrame) as motion:
+            with patch.object(Results, "_ensure_visual_pipeline", wraps=Results._ensure_visual_pipeline) as load:
+                controller.show_state(2)
+                motion.assert_called_once_with(2)
+                self.assertEqual(len(load.call_args_list), 3)
+                for body, call in enumerate(load.call_args_list):
+                    self.assertIs(call.args[0], parts[body])
+                    self.assertEqual(call.args[1].MbDFEMStateIndex, 2)
+        visuals = [part.visual for part in parts]
+        self.assertEqual(len({visual.Name for visual in visuals}), 3)
+        for body, part in enumerate(parts):
+            self.assertAlmostEqual(part.Placement.Base.x, 100 * body + 20 * (body + 1))
+            self.assertTrue(part.Placement.isSame(part.mbdItem.Placement, 1e-9))
+            self.assertTrue(part.visual.Placement.isSame(App.Placement(), 1e-9))
+            self.assertTrue(part.visual.getGlobalPlacement().isSame(part.Placement, 1e-9))
+            self.assertTrue(part.visual.ViewObject.Visibility)
+            self.assertEqual(str(part.visual.ViewObject.Field), "von Mises Stress")
+            self.assertAlmostEqual(part.visual.ViewObject.FixedColorBarMinimum, 2e6)
+            self.assertAlmostEqual(part.visual.ViewObject.FixedColorBarMaximum, 48e6)
+            self.assertFalse(any(result.ViewObject.Visibility for result in part.results))
+        controller.show_state(1)
+        self.assertEqual([part.visual for part in parts], visuals)
+        controller.prepare_display("von Mises Stress", False, 1, 3)
+        parts[1].getResultsFolder().ViewObject.Visibility = False
+        controller.show_state(3)
+        self.assertTrue(parts[0].visual.ViewObject.Visibility)
+        self.assertFalse(parts[1].visual.ViewObject.Visibility)
+        self.assertTrue(parts[2].visual.ViewObject.Visibility)
+        self.assertAlmostEqual(parts[0].visual.ViewObject.FixedColorBarMaximum, 16e6)
+        self.assertAlmostEqual(parts[2].visual.ViewObject.FixedColorBarMaximum, 48e6)
+
+    def test_fem_assembly_animation_rejects_missing_and_mismatched_states(self):
+        from unittest.mock import patch
+        import FreeCADMbDFEMAnimation as Animation
+
+        fem, parts = self._make_fem_animation_model()
+        parts[1].results = [result for result in parts[1].results if result.MbDFEMStateIndex != 1]
+        controller = Animation.FEMAnimationController(fem)
+        controller.set_parts(parts)
+        self.assertEqual(controller.states, [0, 2, 3])
+        self.assertEqual(controller.interval_states(1, 2), [2])
+        with patch.object(controller.motion, "setFrame") as motion:
+            with self.assertRaisesRegex(ValueError, "every selected body"):
+                controller.show_state(1)
+            motion.assert_not_called()
+        controller.set_parts([parts[0], parts[2]])
+        self.assertEqual(controller.states, [0, 1, 2, 3])
+        parts[2].results[2].MbDFEMStateTime = 0.25
+        with self.assertRaisesRegex(ValueError, "different simulation time"):
+            controller.set_parts(parts)
+        parts[2].results[2].MbDFEMStateTime = 0.2
+        other = self.document.addObject("MbDFEM::MbDAssembly", "OtherAssembly")
+        other_part = self.document.addObject("MbDFEM::MbDPart", "OtherBody")
+        other.addPart(other_part)
+        parts[2].mbdItem = other_part
+        with self.assertRaisesRegex(ValueError, "MbD timeline"):
+            controller.set_parts(parts)
+
+    def test_fem_assembly_animation_panel_scrubs_loops_and_stops_together(self):
+        from unittest.mock import patch
+        import FreeCADMbDFEMAnimation as Animation
+
+        fem, parts = self._make_fem_animation_model()
+        panel = Animation.FEMAnimationTaskPanel(fem)
+        try:
+            self.assertEqual(len(panel.controller.parts), 3)
+            panel.first_spin.setValue(0)
+            panel.frame_spin.setValue(0)
+            panel._toggle_playback(True)
+            start = panel._last_tick
+            with patch.object(Animation, "monotonic", return_value=start + 2.1 / 30):
+                panel._tick()
+            self.assertEqual(panel.controller.current_frame, 2)
+            self.assertEqual(panel.frame_spin.value(), 2)
+            self.assertTrue(panel._playing)
+            with patch.object(Animation, "monotonic", return_value=start + 4.1 / 30):
+                panel._tick()
+            self.assertEqual(panel.controller.current_frame, 0)
+            panel.loop_check.setChecked(False)
+            with patch.object(Animation, "monotonic", return_value=start + 8.1 / 30):
+                panel._tick()
+            self.assertEqual(panel.controller.current_frame, 3)
+            self.assertFalse(panel._playing)
+            self.assertFalse(panel._timer.isActive())
+            panel._step(-1)
+            self.assertEqual(panel.controller.current_frame, 2)
+            parts[2].results = [result for result in parts[2].results if result.MbDFEMStateIndex != 1]
+            panel._configure()
+            self.assertEqual(panel.controller.states, [0, 2, 3])
+            panel.slider.setValue(1)
+            self.assertEqual(panel.controller.current_frame, 2)
+            panel.body_checks[2][1].setChecked(False)
+            self.assertEqual(panel.controller.states, [0, 1, 2, 3])
+            for part, check in panel.body_checks:
+                check.setChecked(False)
+            self.assertFalse(panel.play_button.isEnabled())
+            self.assertEqual(panel.controller.states, [])
+        finally:
+            panel.reject()
+
+    def test_fem_animation_signed_fractional_rate_reverses_and_zero_pauses(self):
+        from unittest.mock import patch
+        import FreeCADMbDFEMAnimation as Animation
+
+        fem, _ = self._make_fem_animation_model()
+        panel = Animation.FEMAnimationTaskPanel(fem)
+        try:
+            panel.first_spin.setValue(0)
+            panel.loop_check.setChecked(False)
+            panel.frame_spin.setValue(0)
+            panel.rate_spin.setValue(-0.5)
+            panel._toggle_playback(True)
+            self.assertEqual(panel.controller.current_frame, 3)
+            start = panel._last_tick
+            with patch.object(Animation, "monotonic", return_value=start + 2.1):
+                panel._tick()
+            self.assertEqual(panel.controller.current_frame, 2)
+            with patch.object(Animation, "monotonic", return_value=start + 6.1):
+                panel._tick()
+            self.assertEqual(panel.controller.current_frame, 0)
+            self.assertFalse(panel._playing)
+            panel.rate_spin.setValue(0.5)
+            panel._toggle_playback(True)
+            self.assertTrue(panel._timer.isActive())
+            panel.rate_spin.setValue(0.0)
+            self.assertFalse(panel._playing)
+            self.assertFalse(panel._timer.isActive())
+            panel._toggle_playback(True)
+            self.assertFalse(panel._playing)
+        finally:
+            panel.reject()
+
+    def test_fem_assembly_animation_command_opens_shared_panel(self):
+        from unittest.mock import patch
+        import FreeCADMbDFEMAnimation as Animation
+
+        fem, parts = self._make_fem_animation_model()
+        self.Gui.Selection.clearSelection()
+        self.Gui.Selection.addSelection(fem)
+        command = Animation.AnimateFEMResultsCommand()
+        self.assertIn("MbDFEM_AnimateFEMResults", self.Gui.listCommands())
+        self.assertTrue(command.IsActive())
+        self.assertIs(command.active_assembly(), fem)
+        opened = []
+        show = Animation.show_animation_task_panel
+
+        def open_panel(assembly):
+            panel = show(assembly)
+            opened.append(panel)
+            return panel
+
+        try:
+            with patch.object(Animation, "show_animation_task_panel", side_effect=open_panel):
+                self.Gui.runCommand("MbDFEM_AnimateFEMResults", 0)
+            self.assertTrue(self.Gui.Control.activeDialog())
+            self.assertEqual(len(opened), 1)
+            panel = opened[0]
+            self.assertIsInstance(panel, Animation.FEMAnimationTaskPanel)
+            self.assertEqual(panel.controller.parts, parts)
+            panel._toggle_playback(True)
+            self.assertTrue(panel._timer.isActive())
+            self.Gui.Control.closeDialog()
+            self.assertTrue(panel._closed)
+            self.assertFalse(panel._playing)
+        finally:
+            if self.Gui.Control.activeDialog() is not None:
+                self.Gui.Control.closeDialog()
+
+    def test_fem_animation_settings_survive_save_reopen_with_pending_edits(self):
+        import FreeCADMbDFEMAnimation as Animation
+
+        fem, parts = self._make_fem_animation_model()
+        self.assertEqual(fem.animationParameters.TypeId, "MbDFEM::FEMAnimationParameters")
+        self.assertFalse(fem.animationParameters.settingsInitialized)
+        panel = Animation.FEMAnimationTaskPanel(fem)
+        parameters = fem.animationParameters
+        self.assertEqual(parameters.TypeId, "MbDFEM::FEMAnimationParameters")
+        self.assertIs(Animation.ensure_animation_parameters(fem), parameters)
+        self.assertIn(parameters, fem.Group)
+        self.assertIn(parameters, fem.ViewObject.claimChildren())
+        selected_names = [parts[0].Name, parts[2].Name]
+        try:
+            panel.body_checks[1][1].setChecked(False)
+            panel.first_spin.setValue(0)
+            panel.frame_spin.setValue(1)
+            panel.field_combo.setCurrentIndex(panel.field_combo.findData("Displacement Magnitude"))
+            panel.shared_check.setChecked(False)
+            panel.loop_check.setChecked(False)
+            # Save while the task panel is open, without committing the editors first.
+            panel.last_spin.lineEdit().setText("2")
+            panel.rate_spin.lineEdit().setText("-47.25")
+            with tempfile.TemporaryDirectory() as directory:
+                filename = str(Path(directory) / "FEMAnimationSettings.FCStd")
+                name = fem.Name
+                self.document.saveAs(filename)
+                self.assertEqual(parameters.endFrame, 2)
+                self.assertEqual(parameters.updateRate, -47.25)
+                panel.reject()
+                self.assertFalse(panel._observing)
+                App.closeDocument(self.document.Name)
+                self.document = App.openDocument(filename)
+                restored = self.document.getObject(name)
+                settings = restored.animationParameters
+                self.assertEqual(settings.TypeId, "MbDFEM::FEMAnimationParameters")
+                self.assertEqual([part.Name for part in settings.selectedParts], selected_names)
+                self.assertEqual(settings.currentFrame, 1)
+                self.assertEqual(settings.startFrame, 0)
+                self.assertEqual(settings.endFrame, 2)
+                self.assertEqual(settings.updateRate, -47.25)
+                self.assertEqual(settings.fieldName, "Displacement Magnitude")
+                self.assertFalse(settings.sharedColorScale)
+                self.assertFalse(settings.loop)
+                reopened = Animation.FEMAnimationTaskPanel(restored)
+                try:
+                    self.assertEqual([part.Name for part in reopened.controller.parts], selected_names)
+                    self.assertEqual(reopened.frame_spin.value(), 1)
+                    self.assertEqual(reopened.first_spin.value(), 0)
+                    self.assertEqual(reopened.last_spin.value(), 2)
+                    self.assertEqual(reopened.rate_spin.value(), -47.25)
+                    self.assertEqual(reopened.field_combo.currentData(), "Displacement Magnitude")
+                    self.assertFalse(reopened.shared_check.isChecked())
+                    self.assertFalse(reopened.loop_check.isChecked())
+                    self.assertFalse(reopened._playing)
+                finally:
+                    reopened.reject()
+        finally:
+            if panel._observing:
+                panel.reject()
+
+    def test_fem_animation_settings_preserve_empty_selection_and_pending_close_edits(self):
+        import FreeCADMbDFEMAnimation as Animation
+
+        fem, parts = self._make_fem_animation_model()
+        panel = Animation.FEMAnimationTaskPanel(fem)
+        for part, check in panel.body_checks:
+            check.setChecked(False)
+        panel.first_spin.lineEdit().setText("2")
+        panel.rate_spin.lineEdit().setText("61")
+        panel.accept()
+        self.assertEqual(fem.animationParameters.selectedParts, [])
+        self.assertEqual(fem.animationParameters.startFrame, 2)
+        self.assertEqual(fem.animationParameters.updateRate, 61)
+        reopened = Animation.FEMAnimationTaskPanel(fem)
+        try:
+            self.assertFalse(any(check.isChecked() for part, check in reopened.body_checks))
+            self.assertEqual(reopened.controller.parts, [])
+            self.assertFalse(reopened.play_button.isEnabled())
+            self.assertEqual(reopened.first_spin.value(), 2)
+            self.assertEqual(reopened.rate_spin.value(), 61)
+        finally:
+            reopened.reject()
+
+    def test_fem_animation_parameters_double_click_opens_owner_panel(self):
+        from unittest.mock import patch
+        import FreeCADMbDFEMAnimation as Animation
+
+        fem, parts = self._make_fem_animation_model()
+        settings = Animation.ensure_animation_parameters(fem)
+        self.document.recompute()
+        with patch.object(Animation, "show_animation_task_panel") as show:
+            self.assertTrue(settings.ViewObject.doubleClicked())
+            show.assert_called_once_with(fem)
+        self.Gui.Selection.clearSelection()
+        self.Gui.Selection.addSelection(settings)
+        self.assertIs(Animation.AnimateFEMResultsCommand.active_assembly(), fem)
+
+    def test_fem_animation_observer_detaches_when_document_closes(self):
+        import FreeCADMbDFEMAnimation as Animation
+
+        fem, parts = self._make_fem_animation_model()
+        panel = Animation.FEMAnimationTaskPanel(fem)
+        panel._toggle_playback(True)
+        name = self.document.Name
+        App.closeDocument(name)
+        # Reuse the document name so stale observers would receive its save event.
+        self.document = App.newDocument(name)
+        self.assertFalse(panel._observing)
+        self.assertFalse(panel._playing)
+        self.assertFalse(panel._timer.isActive())
+        with tempfile.TemporaryDirectory() as directory:
+            self.document.saveAs(str(Path(directory) / "Replacement.FCStd"))
+
     def test_results_task_panel_labels_active_stress_field_with_units(self):
         import FreeCADMbDFEMResultsPanel
         from PySide import QtWidgets
@@ -1550,7 +2307,7 @@ class MbDFEMGuiViewProviderTest(unittest.TestCase):
 
         panel = FreeCADMbDAnimationPanel.AnimationTaskPanel(animation_parameters)
         try:
-            panel.update_rate_spin.lineEdit().setText("72")
+            panel.update_rate_spin.lineEdit().setText("-72.5")
             panel.frame_spin.lineEdit().setText("2")
             panel.start_frame_spin.lineEdit().setText("2")
             panel.end_frame_spin.lineEdit().setText("3")
@@ -1558,11 +2315,11 @@ class MbDFEMGuiViewProviderTest(unittest.TestCase):
             panel.loop_check.setChecked(False)
 
             self.assertTrue(panel.accept())
-            self.assertEqual(animation_parameters.updateRate, 72)
+            self.assertEqual(animation_parameters.updateRate, -72.5)
             self.assertEqual(animation_parameters.currentFrame, 2)
             self.assertEqual(animation_parameters.startFrame, 2)
             self.assertEqual(animation_parameters.endFrame, 3)
-            self.assertEqual(animation_parameters.playbackSpeed, 18.0)
+            self.assertEqual(animation_parameters.playbackSpeed, -18.125)
             self.assertEqual(animation_parameters.lengthScale, 4.0)
             self.assertEqual(panel.controller.length_scale, 4.0)
             self.assertFalse(animation_parameters.loop)

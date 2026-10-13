@@ -593,7 +593,7 @@ def _fem_part_placement_at_sample(fem_part, sample=None):
             pass
 
     try:
-        return fem_part.getGlobalPlacement()
+        return FreeCADMbDFreeBodyDiagram._global_placement(fem_part)
     except Exception:
         pass
 

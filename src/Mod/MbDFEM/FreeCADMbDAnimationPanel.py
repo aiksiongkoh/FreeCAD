@@ -105,16 +105,20 @@ class AnimationTaskPanel:
         layout.addLayout(frame_layout)
 
         settings = QtWidgets.QFormLayout()
-        self.update_rate_spin = QtWidgets.QSpinBox()
-        self.update_rate_spin.setRange(1, 240)
+        self.update_rate_spin = QtWidgets.QDoubleSpinBox()
+        self.update_rate_spin.setDecimals(6)
+        self.update_rate_spin.setRange(-1e9, 1e9)
         self.update_rate_spin.setSuffix(" frames/sec")
-        self.update_rate_spin.setToolTip("Simulation frames per real second")
+        self.update_rate_spin.setToolTip("Frames per second: negative plays backward; zero pauses")
         self.start_frame_spin = QtWidgets.QSpinBox()
+        # Apply frame bounds after editing so intermediate digits are not clamped.
+        self.start_frame_spin.setKeyboardTracking(False)
         self.start_frame_spin.setToolTip("First result-series frame index used for playback")
         self.end_frame_spin = QtWidgets.QSpinBox()
+        self.end_frame_spin.setKeyboardTracking(False)
         self.end_frame_spin.setToolTip("Last result-series frame index used for playback")
         self.speed_spin = QtWidgets.QDoubleSpinBox()
-        self.speed_spin.setRange(0.0, 1000000.0)
+        self.speed_spin.setRange(-1000000.0, 1000000.0)
         self.speed_spin.setDecimals(2)
         self.speed_spin.setSingleStep(0.25)
         self.speed_spin.setSuffix("x")
@@ -213,7 +217,7 @@ class AnimationTaskPanel:
 
         start_frame = int(self.start_frame_spin.value())
         end_frame = max(int(self.end_frame_spin.value()), start_frame)
-        self.animation_parameters.updateRate = int(self.update_rate_spin.value())
+        self.animation_parameters.updateRate = float(self.update_rate_spin.value())
         self.animation_parameters.startFrame = start_frame
         self.animation_parameters.endFrame = end_frame
         self.animation_parameters.lengthScale = float(self.scale_spin.value())
@@ -230,7 +234,7 @@ class AnimationTaskPanel:
         self._updating = True
         try:
             self.update_rate_spin.setValue(
-                int(
+                float(
                     getattr(
                         self.animation_parameters,
                         "updateRate",
@@ -320,9 +324,13 @@ class AnimationTaskPanel:
         if self.controller is None or self.controller.frame_count == 0:
             self._refresh()
             return
+        if self.controller.frame_rate == 0:
+            self._pause()
+            return
         if self.controller.current_frame < self.controller.start_frame or self.controller.current_frame > self.controller.end_frame:
-            self.controller.setFrame(self.controller.start_frame)
-        interval = max(int(1000.0 / self.controller.frame_rate), 1)
+            self.controller.setFrame(self.controller.end_frame if self.controller.frame_rate < 0
+                                     else self.controller.start_frame)
+        interval = max(int(1000.0 / abs(self.controller.frame_rate)), 1)
         self.controller.beginPlayback()
         self._timer.start(interval)
         self._refresh()
@@ -378,7 +386,7 @@ class AnimationTaskPanel:
     def _set_update_rate(self, value):
         if self._updating:
             return
-        self.animation_parameters.updateRate = int(value)
+        self.animation_parameters.updateRate = float(value)
         if self._timer.isActive():
             self._play()
 

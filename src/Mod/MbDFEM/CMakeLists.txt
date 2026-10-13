@@ -10,17 +10,23 @@ set(MbDFEM_Scripts
     FreeCADMbDAnimationPanel.py
     FreeCADMbDBackend.py
     FreeCADMbDExporter.py
+    FreeCADMbDFEMAnimation.py
     FreeCADMbDFEMCLOADs.py
     FreeCADMbDFEMDLOADs.py
-    FreeCADMbDFreeBodyDiagram.py
     FreeCADMbDFEMEmbedded.py
     FreeCADMbDFEMResultsPanel.py
+    FreeCADMbDFEMSimulation.py
+    FreeCADMbDFEMStateOverlay.py
+    FreeCADMbDFreeBodyDiagram.py
+    FreeCADMbDGroundFaces.py
     FreeCADMbDMassMarkerPanel.py
     FreeCADMbDPartPanel.py
     FreeCADMbDResults.py
     FreeCADMbDSimulationPanel.py
     Init.py
+    TestAnnuAnnuFacePair.py
     TestMbDFEMApp.py
+    TestMbDFEMStateOverlay.py
 )
 
 set(MbDFEM_Examples

@@ -91,6 +91,17 @@ class SimulationTaskPanel:
         form_layout.addRow("maxIterations", self.max_iterations)
         layout.addWidget(parameters_group)
 
+        solver_group = QtWidgets.QGroupBox("FreeCADMbD Solver")
+        solver_layout = QtWidgets.QFormLayout(solver_group)
+        executable_layout = QtWidgets.QHBoxLayout()
+        self.solver_executable = QtWidgets.QLineEdit(FreeCADMbDBackend.configured_executable() or "")
+        self.solver_executable.setPlaceholderText("Select the FreeCADMbD executable")
+        self.solver_browse_button = QtWidgets.QPushButton("Browse…")
+        executable_layout.addWidget(self.solver_executable)
+        executable_layout.addWidget(self.solver_browse_button)
+        solver_layout.addRow("Solver executable", executable_layout)
+        layout.addWidget(solver_group)
+
         files_group = QtWidgets.QGroupBox("ASMT Files")
         files_layout = QtWidgets.QFormLayout(files_group)
         self.asmt_file = QtWidgets.QLineEdit(str(asmt_path))
@@ -123,6 +134,32 @@ class SimulationTaskPanel:
         self.simulate_button.clicked.connect(self.simulate_asmt)
         self.import_button.clicked.connect(self.import_asmt)
         self.solve_button.clicked.connect(self.solve_assembly)
+        self.solver_browse_button.clicked.connect(self.browse_solver_executable)
+
+    def browse_solver_executable(self):
+        from PySide import QtWidgets
+
+        filename, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self.form,
+            "Select FreeCADMbD executable",
+            self.solver_executable.text().strip(),
+            "Executables (*.exe);;All files (*)",
+        )
+        if filename:
+            self.solver_executable.setText(filename)
+
+    def _save_solver_executable(self):
+        import FreeCADMbDBackend
+        from pathlib import Path
+
+        executable = self.solver_executable.text().strip()
+        if executable and not Path(executable).is_file():
+            self._set_status("Select an existing FreeCADMbD executable file.")
+            return False
+        preferences = App.ParamGet(FreeCADMbDBackend.PREF_GROUP)
+        preferences.SetString(FreeCADMbDBackend.EXE_PREF, executable)
+        App.saveParameter()
+        return True
 
     @staticmethod
     def _double_line_edit(value, minimum, maximum):
@@ -149,7 +186,7 @@ class SimulationTaskPanel:
         return QtGui.QDialogButtonBox.Ok | QtGui.QDialogButtonBox.Cancel
 
     def accept(self):
-        return self._apply_parameters()
+        return self._apply_parameters() and self._save_solver_executable()
 
     def reject(self):
         self._restore_parameters(self._original_parameters)
@@ -178,6 +215,8 @@ class SimulationTaskPanel:
         try:
             if not self._apply_parameters():
                 return False
+            if not self._save_solver_executable():
+                return False
             asmt_path = Path(self.asmt_file.text())
             if not self._confirm_warning(
                 FreeCADMbDBackend.asmt_freshness_warning(self.assembly.Document, asmt_path),
@@ -185,7 +224,9 @@ class SimulationTaskPanel:
             ):
                 return False
             solved_path = Path(self.solved_asmt_file.text())
-            backend = FreeCADMbDBackend.FreeCADMbDProcessBackend()
+            backend = FreeCADMbDBackend.FreeCADMbDProcessBackend(
+                executable_path=self.solver_executable.text().strip() or None,
+            )
             solved_path, completed = backend.simulate_asmt(asmt_path, solved_path)
             self.solved_asmt_file.setText(str(solved_path))
             self._set_status(f"Simulated ASMT: {solved_path}")

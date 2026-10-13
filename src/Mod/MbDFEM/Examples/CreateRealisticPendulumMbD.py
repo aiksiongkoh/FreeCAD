@@ -6,14 +6,14 @@ Run from FreeCAD with:
     FreeCAD -c src/Mod/MbDFEM/Examples/CreateRealisticPendulumMbD.py
 """
 
+from pathlib import Path
+
 import FreeCAD as App
 import MbDFEM  # noqa: F401
 
 
-DOCUMENT_PATH = (
-    r"C:\Users\askoh\Documents\GitHub\aiksiongkoh\FreeCAD\feature-mbdfem"
-    r"\data\examples\RealisticPendulum.FCStd"
-)
+# Run this example from the repository directory, or pass document_path explicitly.
+DOCUMENT_PATH = str(Path("data/examples/RealisticPendulum/RealisticPendulum.FCStd").resolve())
 
 
 def _activate_mbd_workbench():

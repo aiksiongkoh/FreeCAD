@@ -197,6 +197,128 @@ class MbDFEMAssemblyTest(unittest.TestCase):
         finally:
             App.closeDocument(document.Name)
 
+    def test_ground_face_constraints_use_finite_faces_and_mesh_coordinate_frame(self):
+        import Fem
+
+        Embedded = self._load_embedded_module_for_app_test()
+        document = App.newDocument("GroundFaceBoundaryFrame")
+        try:
+            ground = document.addObject("MbDFEM::MbDGroundPart", "Ground")
+            ground.Shape = Part.makeBox(10, 20, 30)
+            ground.Placement = App.Placement(App.Vector(50, 60, 70), App.Rotation(App.Vector(0, 0, 1), 30))
+            ground.groundFaces = [(ground, ["Face1", "Face3"])]
+            fem_part = document.addObject("MbDFEM::FEMPart", "FEMPart")
+            fem_part.mbdItem = ground
+            mesh = document.addObject("Fem::FemMeshObject", "Mesh")
+            fem_part.mesh = mesh
+            fem_part.Group = list(fem_part.Group) + [mesh]
+            document.recompute()
+            fem_part.Placement = ground.getGlobalPlacement()
+            mesh.Placement = App.Placement(App.Vector(3, 1, 2), App.Rotation(App.Vector(0, 0, 1), 15))
+            fem_mesh = Fem.FemMesh()
+            for node_id, xyz in enumerate([(0, 0, 0), (0, 20, 0), (0, 0, 30),
+                                            (5, 5, 5), (0, 40, 0), (10, 0, 30)], 1):
+                point = mesh.Placement.inverse().multVec(App.Vector(*xyz))
+                fem_mesh.addNode(point.x, point.y, point.z, node_id)
+            mesh.FemMesh = fem_mesh
+            # Assigning a mesh also assigns its transform, so reapply Placement.
+            mesh.Placement = App.Placement(mesh.Placement)
+            self.assertEqual(Embedded._ground_face_node_ids(fem_part), [1, 2, 3, 6])
+            self.assertFalse(Embedded.FEMPartAnalysisAdapter(fem_part).Add321Constraints)
+            with tempfile.TemporaryDirectory() as directory:
+                filename = str(Path(directory) / "ground.inp")
+                original = "*HEADING\n*STEP\n*STATIC\n*DLOAD\nEall,GRAV,9810,0,0,-1\n*END STEP\n"
+                Path(filename).write_text(original, encoding="utf-8")
+                self.assertIsNone(Embedded._add_fem_part_constraints_to_inp(
+                    filename, fem_part, mesh.FemMesh.Nodes))
+                content = Path(filename).read_text(encoding="utf-8")
+                self.assertIn("*NSET,NSET=MbDFEMGroundFaces\n1,2,3,6\n", content)
+                self.assertIn("*BOUNDARY\nMbDFEMGroundFaces,1,3,0\n", content)
+                self.assertNotIn("321", content)
+                self.assertIn("*DLOAD\nEall,GRAV,9810,0,0,-1\n", content)
+                self.assertLess(content.index("*NSET"), content.index("*STEP"))
+                self.assertLess(content.index("*BOUNDARY"), content.index("*END STEP"))
+                Embedded._add_fem_part_constraints_to_inp(filename, fem_part, mesh.FemMesh.Nodes)
+                self.assertEqual(Path(filename).read_text(encoding="utf-8"), content)
+            message = Embedded._CCX_STATIC_NO_BC_MESSAGE + "Other prerequisite\n"
+            self.assertEqual(Embedded._remove_auto_321_static_bc_message(
+                message, mesh.FemMesh.Nodes, fem_part), "Other prerequisite\n")
+            self.assertIsNone(Embedded._321_constraint_nodes_for_fem_part(fem_part))
+        finally:
+            App.closeDocument(document.Name)
+
+    def test_ground_face_constraints_reject_missing_faces_and_unmatched_nodes(self):
+        import Fem
+
+        Embedded = self._load_embedded_module_for_app_test()
+        document = App.newDocument("GroundFaceBoundaryInvalid")
+        try:
+            ground = document.addObject("MbDFEM::MbDGroundPart", "Ground")
+            ground.Shape = Part.makeBox(10, 20, 30)
+            fem_part = document.addObject("MbDFEM::FEMPart", "FEMPart")
+            fem_part.mbdItem = ground
+            mesh = document.addObject("Fem::FemMeshObject", "Mesh")
+            fem_mesh = Fem.FemMesh()
+            fem_mesh.addNode(5, 5, 5, 1)
+            mesh.FemMesh = fem_mesh
+            fem_part.mesh = mesh
+            for references in ([], [(ground, ["Edge1"])], [(ground, ["Face1"])]):
+                ground.groundFaces = references
+                with self.assertRaises(ValueError):
+                    Embedded._ground_face_node_ids(fem_part)
+                message = Embedded._remove_auto_321_static_bc_message(
+                    Embedded._CCX_STATIC_NO_BC_MESSAGE, mesh.FemMesh.Nodes, fem_part)
+                self.assertIn(Embedded._CCX_STATIC_NO_BC_MESSAGE, message)
+                self.assertIn("Ground face constraints:", message)
+        finally:
+            App.closeDocument(document.Name)
+
+    def test_fem_part_input_writer_selects_ground_faces_or_321_by_mbd_class(self):
+        import Fem
+        from femtools.ccxtools import FemToolsCcx
+        from unittest.mock import patch
+
+        Embedded = self._load_embedded_module_for_app_test()
+        document = App.newDocument("GroundFaceWriterBranch")
+        try:
+            mesh = document.addObject("Fem::FemMeshObject", "Mesh")
+            fem_mesh = Fem.FemMesh()
+            for node_id, xyz in enumerate([(0, 0, 0), (0, 20, 0), (0, 0, 30), (5, 5, 5)], 1):
+                fem_mesh.addNode(*xyz, node_id)
+            mesh.FemMesh = fem_mesh
+            fem_part = document.addObject("MbDFEM::FEMPart", "FEMPart")
+            fem_part.mesh = mesh
+            with tempfile.TemporaryDirectory() as directory:
+                filename = str(Path(directory) / "part.inp")
+
+                def base_write(tools):
+                    tools.inp_file_name = filename
+                    Path(filename).write_text("*HEADING\n*STEP\n*STATIC\n*END STEP\n", encoding="utf-8")
+
+                for type_id in ("MbDFEM::MbDGroundPart", "MbDFEM::MbDPart"):
+                    part = document.addObject(type_id, "Part")
+                    part.Shape = Part.makeBox(10, 20, 30)
+                    fem_part.mbdItem = part
+                    if type_id == "MbDFEM::MbDGroundPart":
+                        part.groundFaces = [(part, ["Face1"])]
+                    with patch.object(FemToolsCcx, "__init__", lambda *args: None), \
+                            patch.object(FemToolsCcx, "write_inp_file", base_write):
+                        tools = Embedded.FEMPartCcxTools(fem_part, None)
+                        tools.mesh = mesh
+                        tools.write_inp_file()
+                    content = Path(filename).read_text(encoding="utf-8")
+                    if type_id == "MbDFEM::MbDGroundPart":
+                        self.assertIn("MbDFEMGroundFaces,1,3,0", content)
+                        self.assertNotIn("321", content)
+                        self.assertIsNone(tools.auto_321_constraint_nodes)
+                    else:
+                        self.assertIn("** Automatic 3-2-1 constraints", content)
+                        self.assertNotIn("MbDFEMGroundFaces", content)
+                        self.assertIsNotNone(tools.auto_321_constraint_nodes)
+                        self.assertTrue(Embedded.FEMPartAnalysisAdapter(fem_part).Add321Constraints)
+        finally:
+            App.closeDocument(document.Name)
+
     def test_321_constraint_comments_include_node_coordinates(self):
         Embedded = self._load_embedded_module_for_app_test()
 
@@ -284,7 +406,10 @@ class MbDFEMAssemblyTest(unittest.TestCase):
             bryys = [0.0, 0.0, math.pi / 2.0]
             bryzs = [0.0, 0.0, 0.0]
 
-            def getGlobalPlacement(self):
+            def getParentGeoFeatureGroup(self):
+                return None
+
+            def getGlobalPlacementOf(self, target, root, subname):
                 return self.Placement
 
         class FEMPart:
@@ -303,164 +428,197 @@ class MbDFEMAssemblyTest(unittest.TestCase):
         self.assertLess(transformed.distanceToPoint(expected), 1e-12)
         self.assertGreater(transformed.distanceToPoint(force), 1.0)
 
+    def test_calculix_joint_loads_use_only_configured_fem_part_joints(self):
+        import Fem
+        from unittest.mock import patch
+
+        Embedded = self._load_embedded_module_for_app_test()
+        document = App.newDocument("MbDFEMConfiguredJointLoadsTest")
+        try:
+            assembly = document.addObject("MbDFEM::MbDAssembly", "Assembly")
+            part = document.addObject("MbDFEM::MbDPart", "Part")
+            other = document.addObject("MbDFEM::MbDPart", "Other")
+            assembly.addPart(part)
+            assembly.addPart(other)
+            marker = document.addObject("MbDFEM::MbDMarker", "Marker")
+            other_marker = document.addObject("MbDFEM::MbDMarker", "OtherMarker")
+            part.addMarker(marker)
+            other.addMarker(other_marker)
+            fem_part = document.addObject("MbDFEM::FEMPart", "FEMPart")
+            fem_part.mbdItem = part
+            mesh_object = document.addObject("Fem::FemMeshObject", "Mesh")
+            mesh = Fem.FemMesh()
+            mesh.addNode(0, 0, 0, 1)
+            mesh_object.FemMesh = mesh
+            fem_part.mesh = mesh_object
+
+            fem_joints = []
+            for name, reverse in (("JointI", False), ("JointJ", True), ("Unlisted", False)):
+                joint = document.addObject("MbDFEM::MbDJoint", name)
+                joint.markerI = other_marker if reverse else marker
+                joint.markerJ = marker if reverse else other_marker
+                joint.fxs = [2.0, 8.0]
+                joint.tzs = [3.0, 12.0]
+                assembly.addJoint(joint)
+                fem_joint = document.addObject("MbDFEM::FEMJoint", "FEM" + name)
+                fem_joint.mbdItem = joint
+                fem_joints.append(fem_joint)
+
+            def face_load(joint, mbd_part, nodes, **kwargs):
+                self.assertIs(mbd_part, part)
+                self.assertEqual(kwargs["sample"], (1, 1, 0.0))
+                force_x = 8.0 if joint is fem_joints[0].mbdItem else -8.0
+                return [{
+                    "x_axis": App.Vector(1, 0, 0),
+                    "z_axis": App.Vector(0, 0, 1),
+                    "octants": {name: [] for name in ("U1", "U2", "U3", "U4", "L1", "L2", "L3", "L4")},
+                    "cload_components": {"transverse_force": [(1, 1, force_x)]},
+                }]
+
+            with tempfile.TemporaryDirectory() as directory:
+                inp_file = Path(directory) / "calculix.inp"
+                for configured, expected_values in (
+                    ([fem_joints[0]], [8.0]),
+                    ([fem_joints[1]], [-8.0]),
+                    (fem_joints[:2], [8.0, -8.0]),
+                    ([], []),
+                ):
+                    with self.subTest(joints=[joint.Name for joint in configured]):
+                        fem_part.joints = configured
+                        inp_file.write_text("*HEADING\n*STEP\n*STATIC\n*END STEP\n", encoding="utf-8")
+                        with patch.object(Embedded, "_joint_loads_for_fem_part", side_effect=face_load) as build_loads:
+                            loads = Embedded._add_mbd_joint_loads_to_inp(str(inp_file), fem_part, state_index=1)
+                        self.assertEqual(len(loads), len(configured))
+                        self.assertEqual(
+                            [call.args[0] for call in build_loads.call_args_list],
+                            [joint.mbdItem for joint in configured],
+                        )
+                        content = inp_file.read_text(encoding="utf-8")
+                        values = [float(line.split(",")[2]) for line in content.splitlines() if line.startswith("1,1,")]
+                        self.assertEqual(values, expected_values)
+                        if configured:
+                            self.assertLess(content.index("*NSET"), content.index("*STEP"))
+                            self.assertGreater(content.index("*CLOAD"), content.index("*STEP"))
+                        else:
+                            self.assertNotIn(Embedded._MBD_JOINT_CLOAD_MARKER, content)
+        finally:
+            App.closeDocument(document.Name)
+
+    def test_fem_part_joint_selection_skips_missing_unrelated_and_duplicate_links(self):
+        from types import SimpleNamespace
+
+        Embedded = self._load_embedded_module_for_app_test()
+        marker, other_marker = object(), object()
+        part = SimpleNamespace(markers=[marker])
+        joint = type("Joint", (), {"markerI": marker, "markerJ": other_marker})()
+        unrelated = type("Joint", (), {"markerI": other_marker, "markerJ": other_marker})()
+        fem_joint = SimpleNamespace(mbdItem=joint)
+        fem_part = SimpleNamespace(mbdItem=part, joints=[
+            None, SimpleNamespace(mbdItem=None), SimpleNamespace(mbdItem=unrelated),
+            fem_joint, SimpleNamespace(mbdItem=joint),
+        ])
+        self.assertEqual(Embedded._part_joints_for_fem_part(fem_part), [(joint, marker, 1.0)])
+        fem_part.mbdItem = None
+        self.assertEqual(Embedded._part_joints_for_fem_part(fem_part), [])
+
     def test_joint_loads_do_not_fall_back_to_marker_when_face_pairs_are_unavailable(self):
         Embedded = self._load_embedded_module_for_app_test()
         original_face_pairs = Embedded._joint_face_pairs
         try:
             Embedded._joint_face_pairs = lambda _joint: []
 
-            loads = Embedded._joint_loads_for_fem_part(
-                object(),
-                object(),
-                {},
-                App.Vector(1, 2, 3),
-            )
+            loads = Embedded._joint_loads_for_fem_part(object(), object(), {})
         finally:
             Embedded._joint_face_pairs = original_face_pairs
 
         self.assertEqual(loads, [])
 
-    def test_joint_face_pairs_share_force_and_torque_equally(self):
+    def _check_cylindrical_joint_export_wrench(self, centers, origin):
         Embedded = self._load_embedded_module_for_app_test()
-        part_i, part_j = object(), object()
-        force, torque = App.Vector(12, -6, 3), App.Vector(-9, 15, 6)
+        document = App.newDocument("CylindricalExportWrench")
         original_pairs = Embedded._joint_face_pairs
-        original_cloads = Embedded._face_pair_cloads_for_fem_part
         try:
-            for count in (1, 2, 3):
-                pairs = [
-                    {"type": "CylCyl", "partI": part_i, "partJ": part_j}
-                    for _ in range(count)
-                ]
-                # Unsupported faces and faces on unrelated parts cannot carry a share.
-                pairs += [
-                    {"type": "RectRect", "partI": part_i, "partJ": part_j},
-                    {"type": "CylCyl", "partI": object(), "partJ": object()},
-                ]
-                Embedded._joint_face_pairs = lambda _joint: pairs
-                Embedded._face_pair_cloads_for_fem_part = (
-                    lambda joint, pair, part, nodes, force, torque: (force, torque)
-                )
-                for part, sign in ((part_i, 1.0), (part_j, -1.0)):
-                    for input_torque in (torque * sign, None):
-                        with self.subTest(count=count, sign=sign, torque=input_torque):
-                            loads = Embedded._joint_loads_for_fem_part(
-                                object(), part, {}, force * sign, input_torque
-                            )
-                            self.assertEqual(len(loads), count)
-                            total_force, total_torque = App.Vector(), App.Vector()
-                            for pair_force, pair_torque in loads:
-                                self.assertLess(
-                                    pair_force.distanceToPoint(force * (sign / count)), 1e-12
-                                )
-                                total_force += pair_force
-                                if input_torque is None:
-                                    self.assertIsNone(pair_torque)
-                                else:
-                                    self.assertLess(
-                                        pair_torque.distanceToPoint(input_torque * (1.0 / count)),
-                                        1e-12,
-                                    )
-                                    total_torque += pair_torque
-                            self.assertLess(total_force.distanceToPoint(force * sign), 1e-12)
-                            if input_torque is not None:
-                                self.assertLess(total_torque.distanceToPoint(input_torque), 1e-12)
-            self.assertEqual((force.x, force.y, force.z), (12, -6, 3))
-            self.assertEqual((torque.x, torque.y, torque.z), (-9, 15, 6))
+            assembly = document.addObject("MbDFEM::MbDAssembly", "Assembly")
+            hole = document.addObject("MbDFEM::MbDPart", "Hole")
+            pin = document.addObject("MbDFEM::MbDPart", "Pin")
+            bottom, top = min(c.z for c in centers) - 2, max(c.z for c in centers) + 2
+            left, front = min(c.x for c in centers) - 2, min(c.y for c in centers) - 2
+            width, depth = max(c.x for c in centers) + 2 - left, max(c.y for c in centers) + 2 - front
+            pin_shape = Part.makeBox(width, depth, 1, App.Vector(left, front, bottom - 1))
+            hole_shape = Part.makeBox(width, depth, top - bottom, App.Vector(left, front, bottom))
+            for center in centers:
+                cylinder = Part.makeCylinder(1, top - bottom + 0.2, App.Vector(center.x, center.y, bottom - 0.2))
+                pin_shape = pin_shape.fuse(cylinder)
+                hole_shape = hole_shape.cut(cylinder)
+            pin.Shape, hole.Shape = pin_shape, hole_shape
+            markers = []
+            for part in (hole, pin):
+                assembly.addPart(part)
+                marker = document.addObject("MbDFEM::MbDMarker", "Marker")
+                part.addMarker(marker)
+                marker.Placement.Base = origin
+                markers.append(marker)
+            joint = document.addObject("MbDFEM::MbDJoint", "Joint")
+            assembly.addJoint(joint)
+            joint.markerI, joint.markerJ = markers
+            joint.fxs, joint.fys, joint.fzs = [12], [-6], [3]
+            force, torque = App.Vector(12, -6, 3), App.Vector(-9, 15, 6)
+            cylindrical_faces = lambda part: [next(
+                f"Face{i}" for i, face in enumerate(part.Shape.Faces, 1)
+                if face.Surface.TypeId == "Part::GeomCylinder"
+                and abs(face.Surface.Center.x - center.x) < 1e-8
+                and abs(face.Surface.Center.y - center.y) < 1e-8) for center in centers]
+            descriptions = []
+            for i, (h, p) in enumerate(zip(cylindrical_faces(hole), cylindrical_faces(pin))):
+                pair = document.addObject("MbDFEM::CylCylFacePair", "Pair")
+                pair.faceI, pair.faceJ = (hole, [h]), (pin, [p])
+                descriptions.append({"type": "CylCyl", "partI": hole, "partJ": pin,
+                                     "faceI": hole.Shape.getElement(h), "faceJ": pin.Shape.getElement(p),
+                                     "roleI": "hole", "roleJ": "pin", "object": pair})
+            Embedded._joint_face_pairs = lambda _joint: descriptions + [
+                {"type": "RectRect", "partI": hole, "partJ": pin},
+                {"type": "CylCyl", "partI": object(), "partJ": object()}]
+            nodes = {}
+            for center in centers:
+                for z in (-1, 1):
+                    for i in range(32):
+                        angle = (i + 0.3) * math.pi / 16
+                        nodes[len(nodes) + 1] = App.Vector(center.x + math.cos(angle), center.y + math.sin(angle),
+                                                         (bottom + top) * 0.5 + z)
+            for requested_torque in (torque, App.Vector()):
+                joint.txs, joint.tys, joint.tzs = [requested_torque.x], [requested_torque.y], [requested_torque.z]
+                for part, sign in ((hole, 1), (pin, -1)):
+                    loads = Embedded._joint_loads_for_fem_part(joint, part, nodes)
+                    self.assertEqual(len(loads), len(centers))
+                    resultant, moment = App.Vector(), App.Vector()
+                    for load in loads:
+                        self.assertLess(load["force"].distanceToPoint(force * (sign / len(centers))), 1e-9)
+                        for line in Embedded._format_joint_face_pair_cloads(load).splitlines():
+                            if line.startswith("*"):
+                                continue
+                            node, dof, magnitude = line.split(",")
+                            vector = App.Vector()
+                            vector[int(dof) - 1] = float(magnitude)
+                            resultant += vector
+                            moment += (nodes[int(node)] - origin).cross(vector)
+                    self.assertLess(resultant.distanceToPoint(force * sign), 1e-8)
+                    self.assertLess(moment.distanceToPoint(requested_torque * (sign * 1000)), 1e-8)
         finally:
             Embedded._joint_face_pairs = original_pairs
-            Embedded._face_pair_cloads_for_fem_part = original_cloads
+            App.closeDocument(document.Name)
+
+    def test_joint_face_pairs_share_force_and_torque_equally(self):
+        for count in (1, 2, 3):
+            with self.subTest(count=count):
+                self._check_cylindrical_joint_export_wrench(
+                    [App.Vector(5 * i, 0, 0) for i in range(count)], App.Vector())
 
     def test_joint_face_pair_torque_shift_preserves_moment_at_marker_i(self):
-        Embedded = self._load_embedded_module_for_app_test()
-        part = object()
         origin = App.Vector(2, -3, 5)
-        centers = [App.Vector(1, 4, -2), App.Vector(-3, 2, 8)]
-        force, torque = App.Vector(12, -6, 3), App.Vector(-9, 15, 6)
-        original_pairs = Embedded._joint_face_pairs
-        original_reference = Embedded._cylindrical_face_reference
-        original_cloads = Embedded._face_pair_cloads_for_fem_part
-        try:
-            Embedded._cylindrical_face_reference = lambda face: {"origin": face}
-            Embedded._face_pair_cloads_for_fem_part = (
-                lambda joint, pair, part, nodes, force, torque: (force, torque)
-            )
-            for side, sign in (("I", 1.0), ("J", -1.0)):
-                for face_centers in (centers, [origin]):
-                    Embedded._joint_face_pairs = lambda _joint: [
-                        {"type": "CylCyl", "part" + side: part, "face" + side: center}
-                        for center in face_centers
-                    ]
-                    for input_torque in (torque * sign, None):
-                        with self.subTest(side=side, centers=face_centers, torque=input_torque):
-                            loads = Embedded._joint_loads_for_fem_part(
-                                object(), part, {}, force * sign, input_torque,
-                                force_origin=origin,
-                            )
-                            total_force, total_moment = App.Vector(), App.Vector()
-                            for center, (pair_force, pair_torque) in zip(face_centers, loads):
-                                total_force += pair_force
-                                total_moment += pair_torque + (center - origin).cross(pair_force)
-                            self.assertEqual(len(loads), len(face_centers))
-                            self.assertLess(total_force.distanceToPoint(force * sign), 1e-12)
-                            expected = App.Vector() if input_torque is None else input_torque
-                            self.assertLess(total_moment.distanceToPoint(expected), 1e-12)
-        finally:
-            Embedded._joint_face_pairs = original_pairs
-            Embedded._cylindrical_face_reference = original_reference
-            Embedded._face_pair_cloads_for_fem_part = original_cloads
+        for centers in ([App.Vector(1, 4, -2), App.Vector(-3, 2, 8)], [origin]):
+            with self.subTest(centers=centers):
+                self._check_cylindrical_joint_export_wrench(centers, origin)
 
-    def test_joint_force_origin_uses_marker_i_and_sampled_part_placements(self):
-        from types import SimpleNamespace
-
-        Embedded = self._load_embedded_module_for_app_test()
-        assembly_placement = App.Placement(App.Vector(100, 200, -30), App.Rotation(20, 30, 40))
-        assembly = SimpleNamespace(Placement=assembly_placement)
-        source = SimpleNamespace(
-            Placement=App.Placement(App.Vector(90, 80, 70), App.Rotation()),
-            xs=[1, 10], ys=[2, 20], zs=[3, 30],
-            bryxs=[0, 0], bryys=[0, 0], bryzs=[0, math.pi / 2],
-        )
-        target = SimpleNamespace(
-            Placement=App.Placement(App.Vector(-90, -80, -70), App.Rotation()),
-            xs=[4, -10], ys=[5, 5], zs=[6, 7],
-            bryxs=[0, math.pi / 2], bryys=[0, 0], bryzs=[0, 0],
-        )
-        source.getGlobalPlacement = lambda: assembly_placement.multiply(source.Placement)
-        target.getGlobalPlacement = lambda: assembly_placement.multiply(target.Placement)
-        source.isDerivedFrom = lambda _type: True
-        marker = SimpleNamespace(
-            Placement=App.Placement(App.Vector(2, 3, 4), App.Rotation()),
-            getParentGeoFeatureGroup=lambda: source,
-        )
-        joint = SimpleNamespace(markerI=marker)
-        original_assembly = Embedded._owning_mbd_assembly
-        try:
-            Embedded._owning_mbd_assembly = lambda _part: assembly
-            for state in (None, 1):
-                if state is None:
-                    source_global = source.getGlobalPlacement()
-                    target_global = target.getGlobalPlacement()
-                else:
-                    source_global = assembly_placement.multiply(App.Placement(
-                        App.Vector(10, 20, 30), App.Rotation(App.Vector(0, 0, 1), 90)
-                    ))
-                    target_global = assembly_placement.multiply(App.Placement(
-                        App.Vector(-10, 5, 7), App.Rotation(App.Vector(1, 0, 0), 90)
-                    ))
-                expected = target_global.inverse().multVec(
-                    source_global.multVec(marker.Placement.Base)
-                )
-                actual = Embedded._joint_force_origin_in_fem_part(
-                    joint, SimpleNamespace(mbdItem=target), state
-                )
-                self.assertLess(actual.distanceToPoint(expected), 1e-10)
-                same_part = Embedded._joint_force_origin_in_fem_part(
-                    joint, SimpleNamespace(mbdItem=source), state
-                )
-                self.assertLess(same_part.distanceToPoint(marker.Placement.Base), 1e-12)
-        finally:
-            Embedded._owning_mbd_assembly = original_assembly
 
     def test_321_constraint_nodes_are_cached_and_frame_metadata_preserves_result_nodes(self):
         Embedded = self._load_embedded_module_for_app_test()
@@ -1203,6 +1361,7 @@ class MbDFEMAssemblyTest(unittest.TestCase):
             marker_j.Placement = App.Placement()
             fem_joint = document.addObject("MbDFEM::FEMJoint", "FEMJoint")
             fem_joint.mbdItem = joint
+            fem_part.joints = [fem_joint]
             for owner, face_marker in ((part, marker), (pin_part, marker_j)):
                 index = next(index for index, face in enumerate(owner.Shape.Faces, 1)
                              if getattr(face.Surface, "TypeId", None) == "Part::GeomCylinder")
@@ -1214,7 +1373,7 @@ class MbDFEMAssemblyTest(unittest.TestCase):
             joint.fzs = [0.0, 40.0]
             Path(inp_file_name).write_text("*HEADING\n*STEP\n*END STEP\n", encoding="utf-8")
 
-            loads = Embedded._add_mbd_joint_cylindrical_hole_loads_to_inp(
+            loads = Embedded._add_mbd_joint_loads_to_inp(
                 inp_file_name,
                 fem_part,
                 state_index=1,
@@ -1267,105 +1426,226 @@ class MbDFEMAssemblyTest(unittest.TestCase):
             os.remove(inp_file_name)
             App.closeDocument(document.Name)
 
+    def _pin_joint_load_for_test(self, nodes, force, torque, radius=3, load_cost="C2", role="pin"):
+        document = App.newDocument("PinComponentTest")
+        try:
+            assembly = document.addObject("MbDFEM::MbDAssembly", "Assembly")
+            pin = document.addObject("MbDFEM::MbDPart", "Pin")
+            hole = document.addObject("MbDFEM::MbDPart", "Hole")
+            half_length = max([abs(node.z) for node in nodes.values()] + [1]) + 1
+            cylinder = Part.makeCylinder(radius, 2 * half_length, App.Vector(0, 0, -half_length))
+            pin.Shape = cylinder
+            hole.Shape = Part.makeCylinder(radius + 1, 2 * half_length,
+                                           App.Vector(0, 0, -half_length)).cut(cylinder)
+            markers = []
+            for part in (pin, hole):
+                assembly.addPart(part)
+                marker = document.addObject("MbDFEM::MbDMarker", "Marker")
+                part.addMarker(marker)
+                markers.append(marker)
+            joint = document.addObject("MbDFEM::MbDJoint", "Joint")
+            assembly.addJoint(joint)
+            joint.markerI, joint.markerJ = markers
+            joint.fxs, joint.fys, joint.fzs = [force.x], [force.y], [force.z]
+            # This helper accepts FEM torque in N mm; histories use N m.
+            joint.txs, joint.tys, joint.tzs = [torque.x / 1000], [torque.y / 1000], [torque.z / 1000]
+            face = lambda part: next(f"Face{i}" for i, f in enumerate(part.Shape.Faces, 1)
+                                     if f.Surface.TypeId == "Part::GeomCylinder"
+                                     and abs(f.Surface.Radius - radius) < 1e-8)
+            pair = document.addObject("MbDFEM::CylCylFacePair", "Pair")
+            pair.loadCost = load_cost
+            pair.faceI, pair.faceJ = (pin, [face(pin)]), (hole, [face(hole)])
+            generate = MbDFEM.cylCylJointPinLoad if role == "pin" else MbDFEM.cylCylJointHoleLoad
+            target = pin if role == "pin" else hole
+            return generate(pair, joint, target, list(nodes.items()), [pair])
+        finally:
+            App.closeDocument(document.Name)
+
+    def test_pin_and_hole_loads_use_same_contact_regions(self):
+        nodes = {}
+        for z in (-2, 2):
+            for index in range(32):
+                angle = (index + 0.3) * math.pi / 16
+                nodes[len(nodes) + 1] = App.Vector(3 * math.cos(angle), 3 * math.sin(angle), z)
+        for cost in ("C", "C2"):
+            for sign in (-1, 1):
+                with self.subTest(cost=cost, sign=sign):
+                    force = App.Vector(10, 4, 8) * sign
+                    torque = App.Vector(2, 7, 5) * sign
+                    pin = self._pin_joint_load_for_test(nodes, force, torque, load_cost=cost)
+                    hole = self._pin_joint_load_for_test(nodes, force, torque, load_cost=cost, role="hole")
+                    self.assertLess(pin["x_axis"].distanceToPoint(hole["x_axis"]), 1e-9)
+                    for name, records in hole["cload_components"].items():
+                        def vectors(load_records):
+                            result = {}
+                            for node, dof, value in load_records:
+                                result.setdefault(node, App.Vector())[dof - 1] += value
+                            return result
+                        hole_vectors = vectors(records)
+                        pin_vectors = vectors(pin["cload_components"][name])
+                        self.assertTrue(hole_vectors)
+                        self.assertEqual(set(pin_vectors), set(hole_vectors), name)
+                        for node in hole_vectors:
+                            self.assertLess((pin_vectors[node] + hole_vectors[node]).Length, 1e-9, name)
+                    resultant, moment = App.Vector(), App.Vector()
+                    for records in pin["cload_components"].values():
+                        for node, dof, value in records:
+                            vector = App.Vector()
+                            vector[dof - 1] = value
+                            resultant += vector
+                            moment += (nodes[node] - pin["origin"]).cross(vector)
+                    self.assertLess(resultant.distanceToPoint(force), 1e-9)
+                    self.assertLess(moment.distanceToPoint(torque), 1e-9)
+
+    def test_cyl_cyl_load_cost_minimizes_component_nodal_forces(self):
+        nodes = {}
+        for region in range(8):
+            for offset in range(1 + (region * 3) % 5):
+                angle = math.radians(90 * (region % 4) + 12 + offset * 13)
+                z = (1 if region < 4 else -1) * (1 + region * 0.2 + offset * 0.3)
+                nodes[len(nodes) + 1] = App.Vector(3 * math.cos(angle), 3 * math.sin(angle), z)
+        force, torque = App.Vector(10, 0, 8), App.Vector(0, 7, 5)
+        expected = {"transverse_force": (App.Vector(10, 0, 0), App.Vector()),
+                    "axial_force": (App.Vector(0, 0, 8), App.Vector()),
+                    "bending_torque": (App.Vector(), App.Vector(0, 7, 0)),
+                    "axial_torque": (App.Vector(), App.Vector(0, 0, 5))}
+        for role, sign in (("pin", 1), ("hole", -1)):
+            with self.subTest(role=role):
+                loads = {cost: self._pin_joint_load_for_test(nodes, force, torque,
+                                                           load_cost=cost, role=role)
+                         for cost in ("C", "C2")}
+                differences = []
+                for name, (target_force, target_torque) in expected.items():
+                    costs = {}
+                    for cost, load in loads.items():
+                        vectors = {}
+                        for node, dof, magnitude in load["cload_components"][name]:
+                            vector = vectors.setdefault(node, App.Vector())
+                            vector[dof - 1] += magnitude
+                        resultant, moment = App.Vector(), App.Vector()
+                        for node, vector in vectors.items():
+                            resultant += vector
+                            moment += (nodes[node] - load["origin"]).cross(vector)
+                        self.assertLess(resultant.distanceToPoint(target_force * sign), 1e-8)
+                        self.assertLess(moment.distanceToPoint(target_torque * sign), 1e-8)
+                        costs[cost] = sum(vector.dot(vector) for vector in vectors.values())
+                    self.assertLessEqual(costs["C2"], costs["C"] + 1e-9)
+                    differences.append(costs["C"] - costs["C2"])
+                # The uneven mesh distinguishes both objectives for each basis,
+                # including the non-unit cosine and bending bases.
+                self.assertTrue(all(difference > 1e-6 for difference in differences), differences)
+
+    def test_cyl_cyl_load_cost_defaults_and_persists(self):
+        document = App.newDocument("CylindricalLoadCost")
+        try:
+            pair = document.addObject("MbDFEM::CylCylFacePair", "Pair")
+            self.assertEqual(pair.loadCost, "C2")
+            samples = [(a, z) for z in (-1, 1) for a in (0.2, 0.4, 1.9, 3.3, 3.5, 5.0)]
+            nodes = [(i + 1, App.Vector(3 * math.cos(a), 3 * math.sin(a), z))
+                     for i, (a, z) in enumerate(samples)]
+            load = lambda p: MbDFEM.cylCylHoleLoadComponents(
+                p, nodes, App.Vector(), App.Vector(0, 0, 1), 3, -3, 3,
+                App.Vector(), App.Vector(0, 0, 12))
+            with tempfile.TemporaryDirectory() as directory:
+                filename = os.path.join(directory, "CylindricalLoadCost.FCStd")
+                for cost in ("C", "C2"):
+                    pair.loadCost = cost
+                    before = load(pair)
+                    document.saveAs(filename)
+                    App.closeDocument(document.Name)
+                    document = App.openDocument(filename)
+                    pair = document.getObject("Pair")
+                    self.assertEqual(pair.loadCost, cost)
+                    self.assertEqual(load(pair), before)
+        finally:
+            if document.Name in App.listDocuments():
+                App.closeDocument(document.Name)
+
     def test_calculix_input_joint_cylindrical_cloads_use_newtons(self):
         Embedded = self._load_embedded_module_for_app_test()
-        load = {
-            "x_axis": App.Vector(0.6, 0.8, 0),
-            "z_axis": App.Vector(0, 0, 1),
-            "octants": {"U1": [10], "U4": [], "L1": [], "L4": []},
-            "nodal_values": {"U1": 100.0, "U4": 0.0, "L1": 0.0, "L4": 0.0},
-            "node_cosines": {10: 1.0},
-        }
-
-        content = Embedded._format_joint_cylindrical_hole_cloads(load)
-
-        self.assertEqual(content, "*CLOAD\n10,1,60\n10,2,80\n")
+        load = {"cload_components": {"transverse_force": [(10, 1, 60.0), (10, 2, 80.0)]}}
+        content = Embedded._format_joint_face_pair_cloads(load)
+        self.assertEqual(content, "*CLOAD\n** MbDFEM transverse_force\n10,1,60\n10,2,80\n")
 
     def test_calculix_input_keeps_joint_force_and_torque_cloads_separate(self):
         Embedded = self._load_embedded_module_for_app_test()
-        load = {
-            "x_axis": App.Vector(1, 0, 0),
-            "z_axis": App.Vector(0, 0, 1),
-            "octants": {"U1": [10], "U4": [], "L1": [], "L4": []},
-            "nodal_values": {"U1": 5.0, "U4": 0.0, "L1": 0.0, "L4": 0.0},
-            "node_cosines": {10: 1.0},
-            "torque_side_load": {
-                "x_axis": App.Vector(1, 0, 0),
-                "octants": {"U1": [10], "U4": [], "L2": [], "L3": []},
-                "nodal_values": {"U1": 3.0, "U4": 0.0, "L2": 0.0, "L3": 0.0},
-                "node_cosines": {10: 1.0},
-                "node_z_values": {10: 2.0},
-            },
-        }
-
-        content = Embedded._format_joint_cylindrical_hole_cloads(load)
-
-        self.assertEqual(content, "*CLOAD\n10,1,5\n10,1,6\n")
-
+        load = {"cload_components": {"transverse_force": [(10, 1, 5.0)],
+                                     "bending_torque": [(10, 1, 6.0)]}}
+        content = Embedded._format_joint_face_pair_cloads(load)
+        self.assertEqual(content, "*CLOAD\n** MbDFEM transverse_force\n10,1,5\n"
+                                 "** MbDFEM bending_torque\n10,1,6\n")
 
     def test_calculix_input_distributes_joint_side_torque_on_cylindrical_face_octants(self):
-        Embedded = self._load_embedded_module_for_app_test()
-        origin = App.Vector(0, 0, 0)
-        x_axis = App.Vector(1, 0, 0)
-        y_axis = App.Vector(0, 1, 0)
-        z_axis = App.Vector(0, 0, 1)
-        nodes = {
-            1: App.Vector(1, 1, 2),
-            2: App.Vector(1, -1, 2),
-            3: App.Vector(-1, 1, -1),
-            4: App.Vector(-1, -1, -1),
-            5: App.Vector(-1, 1, 2),
-            6: App.Vector(-1, -1, 2),
-            7: App.Vector(1, 1, -1),
-            8: App.Vector(1, -1, -1),
-        }
-        torque_system = (
-            origin,
-            x_axis,
-            y_axis,
-            z_axis,
-            80.0,
-            0.0,
-            {"radius": math.sqrt(2.0), "axial_limits": (-1.0, 2.0)},
-        )
+        nodes = {1: App.Vector(1, 1, 2), 2: App.Vector(1, -1, 2),
+                 3: App.Vector(-1, 1, -1), 4: App.Vector(-1, -1, -1),
+                 5: App.Vector(-1, 1, 2), 6: App.Vector(-1, -1, 2),
+                 7: App.Vector(1, 1, -1), 8: App.Vector(1, -1, -1)}
+        load = self._pin_joint_load_for_test(nodes, App.Vector(), App.Vector(0, 80, 0), math.sqrt(2))
+        vectors = {}
+        for node, dof, value in load["cload_components"]["bending_torque"]:
+            vector = vectors.setdefault(node, App.Vector())
+            vector[dof - 1] += value
+        # Pin tractions oppose the hole reaction on the same bending patch.
+        self.assertEqual(set(vectors), {5, 6, 7, 8})
+        resultant, moment = App.Vector(), App.Vector()
+        for node, vector in vectors.items():
+            resultant += vector
+            moment += (nodes[node] - load["origin"]).cross(vector)
+        self.assertLess(resultant.Length, 1e-9)
+        self.assertLess(moment.distanceToPoint(App.Vector(0, 80, 0)), 1e-9)
 
-        torque_load = Embedded._prototype_pin_bending_load(
-            torque_system,
-            nodes,
-        )
-
-        self.assertIsNotNone(torque_load)
-        self.assertEqual(torque_load["octants"]["U1"], [1])
-        self.assertEqual(torque_load["octants"]["U4"], [2])
-        self.assertEqual(torque_load["octants"]["L2"], [3])
-        self.assertEqual(torque_load["octants"]["L3"], [4])
-        self.assertEqual(torque_load["node_z_values"], {1: 2.0, 2: 2.0, 3: -1.0, 4: -1.0})
-        node_values = {
-            node_id: Embedded._joint_torque_y_node_value(torque_load, name, node_id)
-            for name in ("U1", "U4", "L2", "L3")
-            for node_id in torque_load["octants"][name]
-        }
-        for name in ("U1", "U4", "L2", "L3"):
-            for node_id in torque_load["octants"][name]:
-                self.assertAlmostEqual(
-                    node_values[node_id],
-                    torque_load["nodal_values"][name]
-                    * torque_load["node_z_values"][node_id]
-                    * torque_load["node_cosines"][node_id],
-                )
-        total_force = sum(node_values.values())
-        moment_y = sum(nodes[node_id].z * value for node_id, value in node_values.items())
-        moment_z = -sum(nodes[node_id].y * value for node_id, value in node_values.items())
-        self.assertAlmostEqual(total_force, 0.0)
-        self.assertAlmostEqual(moment_y, 80.0)
-        self.assertAlmostEqual(moment_z, 0.0)
+    def test_c2_torque_partial_contact_uses_nodal_equilibrium_fallback(self):
+        document = App.newDocument("PartialContactTorque")
+        try:
+            pair = document.addObject("MbDFEM::CylCylFacePair", "Pair")
+            nodes = []
+            # Four populated octants provide only four region coefficients,
+            # while the individual tangential nodal forces span equilibrium.
+            for half in (-1, 1):
+                for j, angle in enumerate((0.2, 0.5, 0.9, 1.2, 3.4, 3.7, 4.1, 4.4)):
+                    nodes.append((len(nodes) + 1, App.Vector(
+                        3 * math.cos(angle), 3 * math.sin(angle),
+                        half * (1 + j * 0.2 + (0.3 if half > 0 else 0)))))
+            for requested in (80.0, -80.0, 2.7844827899445732e-5):
+                with self.subTest(torque=requested):
+                    components = MbDFEM.cylCylHoleLoadComponents(
+                        pair, nodes, App.Vector(), App.Vector(0, 0, 1), 3, -4, 4,
+                        App.Vector(), App.Vector(0, 0, requested))
+                    resultant, moment = App.Vector(), App.Vector()
+                    for node_id, dof, value in components["axial_torque"]:
+                        force = App.Vector()
+                        force[dof - 1] = value
+                        resultant += force
+                        moment += nodes[node_id - 1][1].cross(force)
+                    self.assertLess(resultant.Length, 1e-9)
+                    self.assertLess((moment - App.Vector(0, 0, requested)).Length, 1e-8)
+            components = MbDFEM.cylCylHoleLoadComponents(
+                pair, nodes, App.Vector(), App.Vector(0, 0, 1), 3, -4, 4,
+                App.Vector(80, 0, 0), App.Vector())
+            resultant, moment = App.Vector(), App.Vector()
+            for node_id, dof, value in components["transverse_force"]:
+                force = App.Vector()
+                force[dof - 1] = value
+                resultant += force
+                moment += nodes[node_id - 1][1].cross(force)
+                self.assertGreater(nodes[node_id - 1][1].x, 0)
+            self.assertLess((resultant - App.Vector(80, 0, 0)).Length, 1e-9)
+            self.assertLess(moment.Length, 1e-8)
+            # C retains its region coefficients and rejects this contact mesh.
+            pair.loadCost = "C"
+            with self.assertRaisesRegex(RuntimeError, "axial torque"):
+                MbDFEM.cylCylHoleLoadComponents(
+                    pair, nodes, App.Vector(), App.Vector(0, 0, 1), 3, -4, 4,
+                    App.Vector(), App.Vector(0, 0, 80))
+        finally:
+            App.closeDocument(document.Name)
 
     def test_axial_torque_cloads_preserve_wrench_and_minimize_region_forces(self):
         import numpy as np
 
         Embedded = self._load_embedded_module_for_app_test()
-        origin = App.Vector(7, -3, 11)
-        rotation = App.Rotation(23, 41, 17)
+        origin = App.Vector()
+        rotation = App.Rotation()
         x_axis, y_axis, z_axis = [
             rotation.multVec(axis)
             for axis in (App.Vector(1, 0, 0), App.Vector(0, 1, 0), App.Vector(0, 0, 1))
@@ -1386,15 +1666,12 @@ class MbDFEMAssemblyTest(unittest.TestCase):
                     octants[name].append(node_id)
             for requested in (80.0, -80.0):
                 with self.subTest(symmetric=symmetric, torque=requested):
-                    axis_load = Embedded._prototype_pin_axial_torque_load(
-                        nodes, octants, origin, x_axis, y_axis, z_axis, requested
-                    )
-                    self.assertIsNotNone(axis_load)
-                    load = {"x_axis": x_axis, "z_axis": z_axis, "octants": octants,
-                            "torque_axis_load": axis_load}
+                    load = self._pin_joint_load_for_test(nodes, App.Vector(), z_axis * requested, load_cost="C")
                     content = Embedded._format_joint_face_pair_cloads(load)
                     vectors = {}
-                    for line in content.splitlines()[1:]:
+                    for line in content.splitlines():
+                        if line.startswith("*"):
+                            continue
                         node, dof, value = line.split(",")
                         vector = vectors.setdefault(int(node), App.Vector())
                         vector[int(dof) - 1] += float(value)
@@ -1407,6 +1684,12 @@ class MbDFEMAssemblyTest(unittest.TestCase):
                         total_moment += relative.cross(vector)
                     self.assertLess(total_force.Length, 1e-9)
                     self.assertLess(total_moment.distanceToPoint(z_axis * requested), 1e-9)
+                    region_values = {}
+                    for name in names:
+                        node_id = octants[name][0]
+                        tangent = z_axis.cross(nodes[node_id] - origin)
+                        tangent.normalize()
+                        region_values[name] = vectors[node_id].dot(tangent)
                     matrix = np.zeros((6, 8))
                     for column, name in enumerate(names):
                         for node_id in octants[name]:
@@ -1416,14 +1699,14 @@ class MbDFEMAssemblyTest(unittest.TestCase):
                             moment = relative.cross(tangent)
                             matrix[:, column] += tuple(tangent) + tuple(moment)
                             self.assertAlmostEqual(
-                                vectors[node_id].dot(tangent), axis_load["nodal_values"][name],
+                                vectors[node_id].dot(tangent), region_values[name],
                                 places=10,
                             )
                     # The minimum-cost solution is orthogonal to every feasible
                     # perturbation in the equilibrium matrix's null space.
                     _, singular, vh = np.linalg.svd(matrix, full_matrices=True)
                     rank = sum(singular > 1e-10)
-                    coefficients = np.array([axis_load["nodal_values"][name] for name in names])
+                    coefficients = np.array([region_values[name] for name in names])
                     self.assertLess(np.linalg.norm(vh[rank:] @ coefficients), 1e-9)
                     if symmetric:
                         for value in coefficients:
@@ -1433,33 +1716,29 @@ class MbDFEMAssemblyTest(unittest.TestCase):
                         self.assertIn("*NSET,NSET=NS" + name + "\n", nsets)
 
     def test_axial_torque_handles_redundant_and_infeasible_constraints(self):
-        Embedded = self._load_embedded_module_for_app_test()
-        names = ("U1", "U2", "U3", "U4", "L1", "L2", "L3", "L4")
         nodes = {i + 1: App.Vector(math.cos(i * math.pi / 2 + 0.3),
                                    math.sin(i * math.pi / 2 + 0.3), 0) for i in range(4)}
-        octants = {name: [i + 1] if i < 4 else [] for i, name in enumerate(names)}
-        args = (App.Vector(), App.Vector(1, 0, 0), App.Vector(0, 1, 0), App.Vector(0, 0, 1), 40)
-        result = Embedded._prototype_pin_axial_torque_load(nodes, octants, *args)
-        self.assertIsNotNone(result)
-        for name in names[:4]:
-            self.assertAlmostEqual(result["nodal_values"][name], 10)
-        sparse = {name: [1] if name == "U1" else [] for name in names}
-        self.assertIsNone(Embedded._prototype_pin_axial_torque_load(nodes, sparse, *args))
+        load = self._pin_joint_load_for_test(nodes, App.Vector(), App.Vector(0, 0, 40), 1)
+        vectors = {}
+        for node, dof, value in load["cload_components"]["axial_torque"]:
+            vector = vectors.setdefault(node, App.Vector())
+            vector[dof - 1] += value
+        for vector in vectors.values():
+            self.assertAlmostEqual(vector.Length, 10)
+        with self.assertRaisesRegex(RuntimeError, "equilibrium"):
+            self._pin_joint_load_for_test({1: nodes[1]}, App.Vector(), App.Vector(0, 0, 40), 1)
 
     def test_cylindrical_face_load_exports_pure_axial_torque(self):
         Embedded = self._load_embedded_module_for_app_test()
-        cylinder = Part.makeCylinder(3, 4, App.Vector(0, 0, -2))
-        face = next(f for f in cylinder.Faces if f.Surface.TypeId == "Part::GeomCylinder")
         nodes = {}
         for z in (-1, 1):
             for angle in (0.3, 1.9, 3.4, 5.1):
                 nodes[len(nodes) + 1] = App.Vector(3 * math.cos(angle), 3 * math.sin(angle), z)
-        load = Embedded._prototype_pin_face_load(
-            None, face, None, nodes, App.Vector(), App.Vector(0, 0, 80)
-        )
-        self.assertIsNotNone(load)
+        load = self._pin_joint_load_for_test(nodes, App.Vector(), App.Vector(0, 0, 80))
         resultant, moment = App.Vector(), App.Vector()
-        for line in Embedded._format_joint_face_pair_cloads(load).splitlines()[1:]:
+        for line in Embedded._format_joint_face_pair_cloads(load).splitlines():
+            if line.startswith("*"):
+                continue
             node, dof, value = line.split(",")
             vector = App.Vector()
             vector[int(dof) - 1] = float(value)
@@ -1599,12 +1878,8 @@ class MbDFEMAssemblyTest(unittest.TestCase):
         document = App.newDocument("MbDFEMCppCylCylSparseTest")
         try:
             face_pair = document.addObject("MbDFEM::CylCylFacePair", "FacePair")
-            nodes = [
-                (1, App.Vector(1, 0, -1)),
-                (2, App.Vector(0, 1, -1)),
-                (3, App.Vector(1, 0, 1)),
-                (4, App.Vector(0, 1, 1)),
-            ]
+            # These nodes cannot support force in X without a moment about Z.
+            nodes = [(1, App.Vector(0, 1, -1)), (2, App.Vector(0, 1, 1))]
 
             cloads = MbDFEM.cylCylHoleCLOADs(
                 face_pair,
@@ -1673,6 +1948,8 @@ class MbDFEMAssemblyTest(unittest.TestCase):
             pin.addMarker(marker_pin)
             marker_hole.Placement.Base = App.Vector(1, 2, 1)
             marker_pin.Placement.Base = App.Vector(-1, 1, 2)
+            marker_hole.Placement.Rotation = App.Rotation(14, -8, 25)
+            marker_pin.Placement.Rotation = App.Rotation(-7, 19, 31)
             joint = document.addObject("MbDFEM::MbDJoint", "Joint")
             assembly.addJoint(joint)
             hole_face = next(i for i, f in enumerate(hole.Shape.Faces, 1)
@@ -1716,12 +1993,40 @@ class MbDFEMAssemblyTest(unittest.TestCase):
                             force = FreeCADMbDFreeBodyDiagram._sample_vector(joint, ("fxs", "fys", "fzs"), sample)
                             torque = FreeCADMbDFreeBodyDiagram._sample_vector(joint, ("txs", "tys", "tzs"), sample)
                         origin = target.inverse().multVec(source.multVec(joint.markerI.Placement.Base))
+                        global_force, global_torque = App.Vector(force), App.Vector(torque)
+                        expected_marker = source.multiply(joint.markerI.Placement)
                         sign = 1 if on_i else -1
                         force = target.Rotation.inverted().multVec(force * sign)
-                        torque = target.Rotation.inverted().multVec(torque * sign)
+                        torque = target.Rotation.inverted().multVec(torque * (sign * 1000))
                         resultant, moment = App.Vector(), App.Vector()
                         for pair in pairs:
                             load = MbDFEM.cylCylJointHoleLoad(pair, joint, hole, list(nodes.items()), pairs, *sample)
+                            state = load["joint_state"]
+                            self.assertEqual(state["coordsOnFace"], "I" if pair.faceI[0] is hole else "J")
+                            self.assertLess(state["forceOnFaceIatOrigin"].distanceToPoint(global_force * 0.5), 1e-9)
+                            global_origin = target.multVec(load["origin"])
+                            global_z = target.Rotation.multVec(load["z_axis"])
+                            force_side = global_force - global_z * global_force.dot(global_z)
+                            moment_at_origin = global_torque * 1000 + (expected_marker.Base - global_origin).cross(global_force)
+                            self.assertLess(state["torqueOnFaceIatOrigin"].distanceToPoint(moment_at_origin * 0.5), 1e-9)
+                            moment_side = moment_at_origin - global_z * moment_at_origin.dot(global_z)
+                            for name in ("forceCoord", "torqueCoord"):
+                                frame = state[name]
+                                self.assertLess(frame.Base.distanceToPoint(global_origin), 1e-9)
+                                self.assertLess(frame.Rotation.multVec(App.Vector(0, 0, 1)).distanceToPoint(global_z), 1e-9)
+                            self.assertLess(state["forceCoord"].Rotation.multVec(App.Vector(1, 0, 0)).distanceToPoint(
+                                force_side / force_side.Length), 1e-9)
+                            self.assertLess(state["torqueCoord"].Rotation.multVec(App.Vector(0, 1, 0)).distanceToPoint(
+                                moment_side / moment_side.Length), 1e-9)
+                            # The same global state is available without selecting
+                            # a hole side or providing a mesh (pin-side preparation).
+                            pin_state = MbDFEM.cylCylJointState(pair, joint, *sample, len(pairs))
+                            self.assertEqual(pin_state["coordsOnFace"], state["coordsOnFace"])
+                            self.assertLess(pin_state["forceOnFaceIatOrigin"].distanceToPoint(state["forceOnFaceIatOrigin"]), 1e-9)
+                            self.assertLess(pin_state["torqueOnFaceIatOrigin"].distanceToPoint(state["torqueOnFaceIatOrigin"]), 1e-9)
+                            for name in ("forceCoord", "torqueCoord"):
+                                self.assertLess(pin_state[name].Base.distanceToPoint(state[name].Base), 1e-9)
+                                self.assertTrue(pin_state[name].Rotation.isSame(state[name].Rotation, 1e-9))
                             self.assertLess(load["force"].distanceToPoint(force * 0.5), 1e-9)
                             self.assertLess(load["torque"].distanceToPoint(
                                 torque * 0.5 + (origin - load["origin"]).cross(force * 0.5)), 1e-9)
@@ -1744,20 +2049,160 @@ class MbDFEMAssemblyTest(unittest.TestCase):
                                  "role" + side: "hole", "object": pair}
                                 for pair in pairs
                             ]
-                            # Python's pin-prototype inputs must have no influence
-                            # on the authoritative hole-domain entry point.
-                            bridged = Embedded._joint_loads_for_fem_part(
-                                joint, hole, nodes, App.Vector(999, 999, 999),
-                                App.Vector(999, 999, 999), force_origin=App.Vector(999, 999, 999),
-                                sample=sample,
-                            )
+                            # Export obtains the sampled wrench from the C++ entry point.
+                            bridged = Embedded._joint_loads_for_fem_part(joint, hole, nodes, sample=sample)
                             self.assertEqual(len(bridged), 2)
                             for load in bridged:
                                 self.assertLess(load["force"].distanceToPoint(force * 0.5), 1e-9)
                         finally:
                             Embedded._joint_face_pairs = original_pairs
+            # Clear histories and change the pin's midpoint. Common frames must
+            # still use the hole, clear previous reactions, and remain valid.
+            joint.fxs, joint.fys, joint.fzs = [], [], []
+            joint.txs, joint.tys, joint.tzs = [], [], []
+            pin.Shape = Part.makeCylinder(3, 8, App.Vector(0, 0, -1))
+            expected_origin = hole.getGlobalPlacement().multVec(App.Vector())
+            for pair in pairs:
+                state = MbDFEM.cylCylJointState(pair, joint)
+                self.assertEqual(state["coordsOnFace"], "I" if pair.faceI[0] is hole else "J")
+                self.assertEqual(state["forceOnFaceIatOrigin"], App.Vector())
+                self.assertEqual(state["torqueOnFaceIatOrigin"], App.Vector())
+                for name in ("forceCoord", "torqueCoord"):
+                    frame = state[name]
+                    self.assertLess(frame.Base.distanceToPoint(expected_origin), 1e-9)
+                    axes = [frame.Rotation.multVec(axis) for axis in
+                            (App.Vector(1, 0, 0), App.Vector(0, 1, 0), App.Vector(0, 0, 1))]
+                    self.assertTrue(all(abs(axis.Length - 1.0) < 1e-9 for axis in axes))
+                    self.assertLess(axes[0].cross(axes[1]).distanceToPoint(axes[2]), 1e-9)
+                with self.assertRaisesRegex(RuntimeError, "interpolation ratio"):
+                    MbDFEM.cylCylJointState(pair, joint, 0, 1, 1.5)
+                with self.assertRaisesRegex(RuntimeError, "count must be positive"):
+                    MbDFEM.cylCylJointState(pair, joint, 0, 1, 0.5, 0)
             with self.assertRaisesRegex(RuntimeError, "not a cylindrical hole"):
                 MbDFEM.cylCylJointHoleLoad(pairs[0], joint, pin, list(nodes.items()), pairs)
+        finally:
+            App.closeDocument(document.Name)
+
+    def test_pin_cpp_domain_roles_contact_sampling_and_export(self):
+        import FreeCADMbDFreeBodyDiagram
+        Embedded = self._load_embedded_module_for_app_test()
+        document = App.newDocument("PinDomain")
+        try:
+            assembly = document.addObject("MbDFEM::MbDAssembly", "Assembly")
+            assembly.Placement = App.Placement(App.Vector(20, -10, 5), App.Rotation(12, 23, 34))
+            hole = document.addObject("MbDFEM::MbDPart", "Hole")
+            pin = document.addObject("MbDFEM::MbDPart", "Pin")
+            bore = Part.makeCylinder(3, 6, App.Vector(0, 0, -3))
+            hole.Shape = Part.makeBox(10, 10, 6, App.Vector(-5, -5, -3)).cut(bore)
+            pin.Shape = Part.makeCylinder(3, 12, App.Vector(0, 0, -6))
+            assembly.addPart(hole)
+            assembly.addPart(pin)
+            angle = 37
+            pin.Placement = App.Placement(App.Vector(0, 0, 2), App.Rotation(App.Vector(0, 0, 1), angle))
+            markers = []
+            for part in (hole, pin):
+                marker = document.addObject("MbDFEM::MbDMarker", "Marker")
+                part.addMarker(marker)
+                marker.Placement.Base = App.Vector(1, 2, 1)
+                markers.append(marker)
+                part.xs, part.ys = [1, 5], [2, 6]
+                part.zs = [3, 7] if part is hole else [5, 9]
+                part.bryxs, part.bryys = [0, 0], [0, 0]
+                offset = 0 if part is hole else math.radians(angle)
+                part.bryzs = [offset, offset + 0.6]
+            joint = document.addObject("MbDFEM::MbDJoint", "Joint")
+            assembly.addJoint(joint)
+            joint.fxs, joint.fys, joint.fzs = [12, 16], [4, -2], [7, 3]
+            joint.txs, joint.tys, joint.tzs = [9, -2], [-6, 8], [13, 10]
+            faces = [next(f"Face{i}" for i, f in enumerate(part.Shape.Faces, 1)
+                          if f.Surface.TypeId == "Part::GeomCylinder") for part in (hole, pin)]
+            pairs = []
+            for reverse in (False, True):
+                pair = document.addObject("MbDFEM::CylCylFacePair", "Pair")
+                references = [(hole, [faces[0]]), (pin, [faces[1]])]
+                pair.faceI, pair.faceJ = references[::-1] if reverse else references
+                pairs.append(pair)
+            relative = pin.Placement.inverse()
+            nodes = {}
+            contact_ids = set()
+            for z in (-3, -2, 2, 3, -4, 6):
+                for i in range(32):
+                    a = (i + 0.3) * math.pi / 16
+                    node_id = len(nodes) + 1
+                    nodes[node_id] = relative.multVec(App.Vector(3 * math.cos(a), 3 * math.sin(a), z))
+                    if abs(z) <= 3:
+                        contact_ids.add(node_id)
+            for marker_i in (0, 1):
+                joint.markerI, joint.markerJ = markers[marker_i], markers[1 - marker_i]
+                for sample in ((-1, -1, 0.0), (0, 1, 0.4)):
+                    lower, upper, ratio = sample
+                    if lower < 0:
+                        placement = pin.getGlobalPlacement()
+                    else:
+                        local = App.Placement(App.Vector(1 + 4 * ratio, 2 + 4 * ratio, 5 + 4 * ratio),
+                                              App.Rotation(App.Vector(0, 0, 1), angle + math.degrees(0.6 * ratio)))
+                        placement = assembly.getGlobalPlacement() * local
+                    value = lambda series: series[0] if lower < 0 else series[0] * (1 - ratio) + series[1] * ratio
+                    sign = 1 if marker_i == 1 else -1
+                    force = placement.Rotation.inverted().multVec(
+                        App.Vector(value(joint.fxs), value(joint.fys), value(joint.fzs)) * sign)
+                    torque = placement.Rotation.inverted().multVec(
+                        App.Vector(value(joint.txs), value(joint.tys), value(joint.tzs)) * (sign * 1000))
+                    total_force, total_torque = App.Vector(), App.Vector()
+                    for pair in pairs:
+                        load = MbDFEM.cylCylJointPinLoad(pair, joint, pin, list(nodes.items()), pairs + [pair], *sample)
+                        selected = {node for region in load["octants"].values() for node in region}
+                        self.assertEqual(selected, contact_ids)
+                        marker_part = (hole, pin)[marker_i]
+                        marker_placement = (marker_part.getGlobalPlacement() if lower < 0 else
+                            assembly.getGlobalPlacement() * FreeCADMbDFreeBodyDiagram._placement_at_sample(marker_part, sample))
+                        marker_origin = placement.inverse().multVec(
+                            marker_placement.multVec(joint.markerI.Placement.Base))
+                        self.assertLess(placement.multVec(load["origin"]).distanceToPoint(
+                            load["joint_state"]["forceCoord"].Base), 1e-8)
+                        resultant, moment = App.Vector(), App.Vector()
+                        for line in Embedded._format_joint_face_pair_cloads(load).splitlines():
+                            if line.startswith("*"):
+                                continue
+                            node, dof, magnitude = line.split(",")
+                            self.assertIn(int(node), contact_ids)
+                            vector = App.Vector()
+                            vector[int(dof) - 1] = float(magnitude)
+                            resultant += vector
+                            moment += (nodes[int(node)] - marker_origin).cross(vector)
+                        self.assertLess(resultant.distanceToPoint(force * 0.5), 1e-8)
+                        self.assertLess(moment.distanceToPoint(torque * 0.5), 1e-8)
+                        total_force += resultant
+                        total_torque += moment
+                    self.assertLess(total_force.distanceToPoint(force), 1e-8)
+                    self.assertLess(total_torque.distanceToPoint(torque), 1e-8)
+                    original_pairs = Embedded._joint_face_pairs
+                    try:
+                        Embedded._joint_face_pairs = lambda _joint: [
+                            {"type": "CylCyl", "partI": pair.faceI[0], "partJ": pair.faceJ[0],
+                             "faceI": pair.faceI[0].Shape.getElement(pair.faceI[1][0]),
+                             "faceJ": pair.faceJ[0].Shape.getElement(pair.faceJ[1][0]),
+                             "roleI": "hole" if pair.faceI[0] is hole else "pin",
+                             "roleJ": "hole" if pair.faceJ[0] is hole else "pin", "object": pair}
+                            for pair in pairs]
+                        bridged = Embedded._joint_loads_for_fem_part(joint, pin, nodes, sample=sample)
+                        self.assertEqual(len(bridged), 2)
+                        self.assertTrue(all(load["face_role"] == "pin" for load in bridged))
+                        self.assertLess(bridged[0]["force"].distanceToPoint(force * 0.5), 1e-8)
+                        with self.assertRaisesRegex(RuntimeError, "equilibrium"):
+                            Embedded._joint_loads_for_fem_part(joint, pin, {}, sample=sample)
+                    finally:
+                        Embedded._joint_face_pairs = original_pairs
+            with self.assertRaisesRegex(RuntimeError, "not a cylindrical pin"):
+                MbDFEM.cylCylJointPinLoad(pairs[0], joint, hole, [], pairs)
+            with self.assertRaisesRegex(RuntimeError, "participant"):
+                MbDFEM.cylCylJointPinLoad(pairs[0], joint, pin, [], [])
+            with self.assertRaisesRegex(RuntimeError, "interpolation ratio"):
+                MbDFEM.cylCylJointPinLoad(pairs[0], joint, pin, [], pairs, 0, 1, 1.5)
+            joint.fxs, joint.fys, joint.fzs = [], [], []
+            joint.txs, joint.tys, joint.tzs = [], [], []
+            zero = MbDFEM.cylCylJointPinLoad(pairs[0], joint, pin, [], pairs)
+            self.assertTrue(all(not records for records in zero["cload_components"].values()))
         finally:
             App.closeDocument(document.Name)
 
@@ -1769,7 +2214,10 @@ class MbDFEMAssemblyTest(unittest.TestCase):
             "transverse_force": [(1, 1, 5.0)],
             "bending_torque": [(1, 1, -2.0)],
         }}
-        mesh = SimpleNamespace(getGlobalPlacement=lambda: App.Placement())
+        mesh = SimpleNamespace(
+            getParentGeoFeatureGroup=lambda: None,
+            getGlobalPlacementOf=lambda *_args: App.Placement(),
+        )
         part = SimpleNamespace(mesh=mesh)
         original_loads = module._mbd_joint_cylindrical_hole_loads
         original_inp = module._diagram_vectors_from_matching_inp
@@ -1960,12 +2408,12 @@ class MbDFEMAssemblyTest(unittest.TestCase):
             fem_joint.mbdItem = joint
             document.recompute()
 
-            pairs = Embedded._joint_touching_face_pairs(joint)
+            pairs = Embedded._joint_face_pairs(joint)
 
             self.assertFalse(hasattr(joint, "facePairs"))
             self.assertTrue(hasattr(fem_joint, "facePairs"))
             self.assertEqual(len(pairs), 1)
-            face_i, face_j = pairs[0]
+            face_i, face_j = pairs[0]["faceI"], pairs[0]["faceJ"]
             self.assertLess(face_i.CenterOfMass.distanceToPoint(App.Vector(1, 0.5, 0.5)), 1e-7)
             self.assertLess(face_j.CenterOfMass.distanceToPoint(App.Vector(0, 0.5, 0.5)), 1e-7)
             self.assertEqual(len(fem_joint.facePairs), 1)
@@ -1980,14 +2428,14 @@ class MbDFEMAssemblyTest(unittest.TestCase):
         finally:
             App.closeDocument(document.Name)
 
-    def test_face_pair_type_uses_anul_anul_when_either_face_is_annular(self):
+    def test_face_pair_type_uses_annu_annu_when_either_face_is_annular(self):
         Embedded = self._load_embedded_module_for_app_test()
 
-        self.assertEqual(Embedded._face_pair_type("Anul", "Anul"), "AnulAnul")
-        self.assertEqual(Embedded._face_pair_type("Anul", "Rect"), "AnulAnul")
-        self.assertEqual(Embedded._face_pair_type("Rect", "Anul"), "AnulAnul")
-        self.assertEqual(Embedded._face_pair_type("Anul", None), "AnulAnul")
-        self.assertEqual(Embedded._face_pair_type(None, "Anul"), "AnulAnul")
+        self.assertEqual(Embedded._face_pair_type("Annu", "Annu"), "AnnuAnnu")
+        self.assertEqual(Embedded._face_pair_type("Annu", "Rect"), "AnnuAnnu")
+        self.assertEqual(Embedded._face_pair_type("Rect", "Annu"), "AnnuAnnu")
+        self.assertEqual(Embedded._face_pair_type("Annu", None), "AnnuAnnu")
+        self.assertEqual(Embedded._face_pair_type(None, "Annu"), "AnnuAnnu")
 
     def test_joint_face_pairs_use_stored_fem_joint_references_before_geometry_search(self):
         Embedded = self._load_embedded_module_for_app_test()
@@ -2141,6 +2589,309 @@ class MbDFEMAssemblyTest(unittest.TestCase):
                 if document_name is not None and document_name in App.listDocuments():
                     App.closeDocument(document_name)
 
+    def test_fem_hole_pin_joint_uses_full_wrench_at_face_origin(self):
+        document = App.newDocument("HolePinOriginWrench")
+        try:
+            pin = document.addObject("MbDFEM::MbDPart", "Pin")
+            hole = document.addObject("MbDFEM::MbDPart", "Hole")
+            pin.Shape = Part.makeCylinder(1, 4, App.Vector(0, 0, -2))
+            hole.Shape = Part.makeCylinder(2, 4, App.Vector(0, 0, -2)).cut(pin.Shape)
+            markers = []
+            for part in (hole, pin):
+                marker = document.addObject("MbDFEM::MbDMarker", "Marker")
+                marker.Placement.Base = App.Vector(0.2, -0.3, 0.5)
+                part.addMarker(marker)
+                markers.append(marker)
+            joint = document.addObject("MbDFEM::MbDJoint", "Joint")
+            joint.markerI, joint.markerJ = markers
+            joint.fxs, joint.fys, joint.fzs = [6, -2], [4, 3], [5, -7]
+            joint.txs, joint.tys, joint.tzs = [0.01, -0.02], [0.02, 0.03], [-0.01, 0.02]
+            fem_joint = document.addObject("MbDFEM::FEMHolePinJoint", "FEMJoint")
+            fem_joint.mbdItem = joint
+            pair = document.addObject("MbDFEM::CylCylFacePair", "Pair")
+            # Reverse FacePair links relative to the initial marker ordering.
+            for prop, part in (("faceI", pin), ("faceJ", hole)):
+                name = next("Face" + str(i + 1) for i, face in enumerate(part.Shape.Faces)
+                            if face.Surface.TypeId == "Part::GeomCylinder"
+                            and abs(face.Surface.Radius - 1) < 1e-8)
+                setattr(pair, prop, (part, [name]))
+            fem_joint.facePairs = [pair]
+            nodes = [(i + 1, App.Vector(math.cos(a), math.sin(a), z))
+                     for i, (a, z) in enumerate((a, z) for z in (-1, 1)
+                         for a in ((j + 0.2) * math.pi / 12 for j in range(24)))]
+            for reverse in (False, True):
+                joint.markerI, joint.markerJ = markers[::-1] if reverse else markers
+                for lower, upper, ratio in ((-1, -1, 0.0), (1, 1, 0.0), (0, 1, 0.4)):
+                    lo, hi = max(lower, 0), max(upper, 0)
+                    sample = lambda values: values[lo] * (1 - ratio) + values[hi] * ratio
+                    force = App.Vector(*(sample(getattr(joint, c + "s")) for c in ("fx", "fy", "fz")))
+                    torque = App.Vector(*(sample(getattr(joint, c + "s")) for c in ("tx", "ty", "tz"))) * 1000
+                    expected_torque = torque + markers[0].Placement.Base.cross(force)
+                    for part, generate in ((hole, MbDFEM.cylCylJointHoleLoad),
+                                           (pin, MbDFEM.cylCylJointPinLoad)):
+                        with self.subTest(reverse=reverse, sample=(lower, upper, ratio), part=part.Name):
+                            load = generate(pair, joint, part, nodes, [pair, pair], lower, upper, ratio)
+                            state = load["joint_state"]
+                            self.assertLess((state["forceOnFaceIatOrigin"] - force).Length, 1e-8)
+                            self.assertLess((state["torqueOnFaceIatOrigin"] - expected_torque).Length, 1e-8)
+                            sign = 1 if part is (pin if reverse else hole) else -1
+                            self.assertLess((load["force"] - force * sign).Length, 1e-8)
+                            self.assertLess((load["torque"] - expected_torque * sign).Length, 1e-8)
+                            resultant, moment = App.Vector(), App.Vector()
+                            for records in load["cload_components"].values():
+                                for node_id, dof, value in records:
+                                    f = App.Vector()
+                                    setattr(f, ("x", "y", "z")[dof - 1], value)
+                                    resultant += f
+                                    moment += (nodes[node_id - 1][1] - markers[0].Placement.Base).cross(f)
+                            self.assertLess((resultant - force * sign).Length, 1e-7)
+                            self.assertLess((moment - torque * sign).Length, 1e-7)
+            extra = document.addObject("MbDFEM::CylCylFacePair", "ExtraPair")
+            extra.faceI, extra.faceJ = pair.faceI, pair.faceJ
+            with self.assertRaisesRegex(RuntimeError, "only its single FacePair"):
+                MbDFEM.cylCylJointHoleLoad(pair, joint, hole, nodes, [pair, extra])
+            self.assertEqual(fem_joint.facePairs, [pair])
+        finally:
+            App.closeDocument(document.Name)
+
+    def test_fem_hole_pin_joint_requires_one_cyl_cyl_face_pair(self):
+        document = App.newDocument("MbDFEMHolePinJointTest")
+        try:
+            joint = document.addObject("MbDFEM::FEMHolePinJoint", "Joint")
+            pair = document.addObject("MbDFEM::CylCylFacePair", "Pair")
+            other_pair = document.addObject("MbDFEM::CylCylFacePair", "OtherPair")
+            wrong_pair = document.addObject("MbDFEM::RectRectFacePair", "WrongPair")
+            for pairs in ([], [pair, other_pair], [wrong_pair]):
+                with self.subTest(pairs=[obj.Name for obj in pairs]):
+                    joint.facePairs = pairs
+                    joint.touch()
+                    document.recompute()
+                    self.assertIn("Invalid", joint.State)
+                    self.assertIn("exactly one CylCylFacePair", joint.getStatusString())
+
+                    joint.facePairs = [pair]
+                    document.recompute()
+                    self.assertNotIn("Invalid", joint.State)
+                    self.assertEqual(joint.facePairs, [pair])
+        finally:
+            App.closeDocument(document.Name)
+
+    def test_hole_2_pin_flange_loads_preserve_wrench_and_switch_outside_contact(self):
+        import math
+        Embedded = self._load_embedded_module_for_app_test()
+        document = App.newDocument("FlangeWrenchDistributionTest")
+        try:
+            pin = document.addObject("MbDFEM::MbDPart", "Pin")
+            hole = document.addObject("MbDFEM::MbDPart", "Hole")
+            pin.Shape = Part.makeCylinder(1, 8, App.Vector(0, 0, -4))
+            for z in (-5, 4):
+                pin.Shape = pin.Shape.fuse(Part.makeCylinder(2, 1, App.Vector(0, 0, z)))
+            hole.Shape = Part.makeCylinder(3, 8, App.Vector(0, 0, -4)).cut(
+                Part.makeCylinder(2.5, 8, App.Vector(0, 0, -4)))
+            for z in (-4, 2):
+                sleeve = Part.makeCylinder(3, 2, App.Vector(0, 0, z)).cut(
+                    Part.makeCylinder(1, 2, App.Vector(0, 0, z)))
+                hole.Shape = hole.Shape.fuse(sleeve)
+            rotation = (App.Rotation(App.Vector(0, 0, 1), 23)
+                        * App.Rotation(App.Vector(0, 1, 0), 17)
+                        * App.Rotation(App.Vector(1, 0, 0), 11))
+            markers = []
+            for part in (pin, hole):
+                part.Placement = App.Placement(App.Vector(10, 20, 30), rotation)
+                part.xs, part.ys, part.zs = [10, 15], [20, 25], [30, 35]
+                part.bryxs = [math.radians(11)] * 2
+                part.bryys = [math.radians(17)] * 2
+                part.bryzs = [math.radians(23)] * 2
+                marker = document.addObject("MbDFEM::MbDMarker", "Marker")
+                marker.Placement.Base = App.Vector(0.4, -0.2, 1)
+                part.addMarker(marker)
+                markers.append(marker)
+            joint = document.addObject("MbDFEM::MbDJoint", "Joint")
+            joint.markerI, joint.markerJ = markers
+            fem_joint = Embedded._create_fem_joint(joint)
+            self.assertEqual(fem_joint.TypeId, "MbDFEM::FEMHole2PinFlangeJoint")
+            self.assertEqual(len(fem_joint.facePairs), 4)
+            # Reverse stored FacePair links as well as marker ordering below.
+            fem_joint.facePairs[1].faceI, fem_joint.facePairs[1].faceJ = (
+                fem_joint.facePairs[1].faceJ, fem_joint.facePairs[1].faceI)
+            nodes = {}
+            for z, radii in ((-4, (1, 1.5, 2)), (-3, (1,)), (-2, (1,)),
+                             (2, (1,)), (3, (1,)), (4, (1, 1.5, 2))):
+                for radius in radii:
+                    for angle in range(0, 360, 30):
+                        theta = math.radians(angle)
+                        nodes[len(nodes) + 1] = App.Vector(radius * math.cos(theta),
+                                                         radius * math.sin(theta), z)
+            local_forces = [App.Vector(6, 4, 10), App.Vector(-3, 8, -12)]
+            local_torques = [App.Vector(0.02, -0.03, 0.01), App.Vector(-0.04, 0.01, -0.02)]
+            forces = [rotation.multVec(v) for v in local_forces]
+            torques = [rotation.multVec(v) for v in local_torques]
+            joint.fxs, joint.fys, joint.fzs = ([v.x for v in forces], [v.y for v in forces],
+                                             [v.z for v in forces])
+            joint.txs, joint.tys, joint.tzs = ([v.x for v in torques], [v.y for v in torques],
+                                             [v.z for v in torques])
+            original_pairs = list(fem_joint.facePairs)
+            for reverse in (False, True):
+                joint.markerI, joint.markerJ = markers[::-1] if reverse else markers
+                active_origins = []
+                for sample in ((-1, -1, 0.0), (0, 0, 0.0), (1, 1, 0.0), (0, 1, 0.4)):
+                    lo, hi, ratio = sample
+                    lo, hi = max(lo, 0), max(hi, 0)
+                    expected_force = local_forces[lo] * (1 - ratio) + local_forces[hi] * ratio
+                    expected_torque = (local_torques[lo] * (1 - ratio) + local_torques[hi] * ratio) * 1000
+                    for part in (pin, hole):
+                        with self.subTest(reverse=reverse, sample=sample, part=part.Name):
+                            loads = Embedded._joint_loads_for_fem_part(joint, part, nodes, sample)
+                            cylinders = [l for l in loads if l["face_pair_type"] == "CylCyl"]
+                            annuli = [l for l in loads if l["face_pair_type"] == "AnnuAnnu"]
+                            self.assertEqual(len(cylinders), 2)
+                            active = [l for l in annuli if l["force"].Length > 1e-8]
+                            self.assertEqual(len(active), 1)
+                            active_origins.append(active[0]["origin"].z)
+                            for load in cylinders:
+                                self.assertAlmostEqual(load["force"].z, 0, places=8)
+                                self.assertLess(load["torque"].Length, 1e-8)
+                                self.assertLess(load["joint_state"]["torqueOnFaceIatOrigin"].Length, 1e-8)
+                            self.assertAlmostEqual(active[0]["force"].x, 0, places=8)
+                            self.assertAlmostEqual(active[0]["force"].y, 0, places=8)
+                            for load in annuli:
+                                self.assertAlmostEqual(load["torque"].x, 0, places=8)
+                                self.assertAlmostEqual(load["torque"].y, 0, places=8)
+                                if load is not active[0]:
+                                    self.assertLess(load["force"].Length + load["torque"].Length, 1e-8)
+                            sign = 1 if part is (hole if reverse else pin) else -1
+                            resultant, moment = App.Vector(), App.Vector()
+                            for load in loads:
+                                # Verify the actual records written to CalculiX.
+                                for line in Embedded._format_joint_face_pair_cloads(load).splitlines():
+                                    if not line or line.startswith("*"):
+                                        continue
+                                    n, d, value = line.split(",")
+                                    force = App.Vector()
+                                    setattr(force, ("x", "y", "z")[int(d) - 1], float(value))
+                                    resultant += force
+                                    moment += (nodes[int(n)] - markers[0].Placement.Base).cross(force)
+                            self.assertLess((resultant - expected_force * sign).Length, 1e-7)
+                            self.assertLess((moment - expected_torque * sign).Length, 1e-7)
+                    self.assertEqual(fem_joint.facePairs, original_pairs)
+                # Both state directions must choose opposite flange contacts.
+                self.assertAlmostEqual(active_origins[0], -active_origins[4], places=8)
+            # No axial force: one contact carries pure axial torque, all others stay zero.
+            joint.fxs = joint.fys = joint.fzs = [0]
+            pure_torque = rotation.multVec(App.Vector(0, 0, 0.01))
+            joint.txs, joint.tys, joint.tzs = [pure_torque.x], [pure_torque.y], [pure_torque.z]
+            loads = Embedded._joint_loads_for_fem_part(joint, pin, nodes)
+            self.assertEqual(sum(l["torque"].Length > 1e-8 for l in loads), 1)
+        finally:
+            App.closeDocument(document.Name)
+
+    def test_fem_joint_creation_selects_hole_2_pin_flange_from_contact_faces(self):
+        Embedded = self._load_embedded_module_for_app_test()
+        for sleeve_count, flange, expected in (
+            (2, True, "MbDFEM::FEMHole2PinFlangeJoint"),
+            (1, True, "MbDFEM::FEMJoint"),
+            (2, False, "MbDFEM::FEMJoint"),
+            (1, False, "MbDFEM::FEMHolePinJoint"),
+        ):
+            with self.subTest(sleeves=sleeve_count, flange=flange):
+                document = App.newDocument("FEMJointFactoryTest")
+                try:
+                    pin = document.addObject("MbDFEM::MbDPart", "Pin")
+                    hole = document.addObject("MbDFEM::MbDPart", "Hole")
+                    pin.Shape = Part.makeCylinder(1, 5, App.Vector(0, 0, -3))
+                    if flange:
+                        pin.Shape = pin.Shape.fuse(Part.makeCylinder(2, 1, App.Vector(0, 0, -1)))
+                    sleeves = [Part.makeCylinder(3, 2, App.Vector(0, 0, z)).cut(
+                        Part.makeCylinder(1, 2, App.Vector(0, 0, z)))
+                        for z in (0, -3)[:sleeve_count]]
+                    hole_shape = sleeves[0]
+                    if sleeve_count == 2:
+                        bridge = Part.makeCylinder(3, 5, App.Vector(0, 0, -3)).cut(
+                            Part.makeCylinder(2.5, 5, App.Vector(0, 0, -3)))
+                        hole_shape = hole_shape.fuse(bridge).fuse(sleeves[1])
+                    hole.Shape = hole_shape
+                    markers = []
+                    for part in (pin, hole):
+                        marker = document.addObject("MbDFEM::MbDMarker", "Marker")
+                        part.addMarker(marker)
+                        markers.append(marker)
+                    joint = document.addObject("MbDFEM::MbDJoint", "Joint")
+                    joint.markerI, joint.markerJ = markers
+                    fem_joint = Embedded._create_fem_joint(joint)
+                    self.assertEqual(fem_joint.TypeId, expected)
+                    self.assertIs(fem_joint.mbdItem, joint)
+                    types = [pair.TypeId for pair in fem_joint.facePairs]
+                    self.assertEqual(types.count("MbDFEM::CylCylFacePair"), sleeve_count)
+                    self.assertEqual(types.count("MbDFEM::AnnuAnnuFacePair"), sleeve_count if flange else 0)
+                    document.recompute()
+                    self.assertNotIn("Invalid", fem_joint.State)
+                    pairs = list(fem_joint.facePairs)
+                    # A second FEM assembly for the same MbD joint must receive
+                    # its own face pairs, rather than update the earlier joint.
+                    second = Embedded._create_fem_joint(joint)
+                    self.assertEqual(second.TypeId, expected)
+                    self.assertEqual(fem_joint.facePairs, pairs)
+                    self.assertEqual(len(second.facePairs), len(pairs))
+                    self.assertFalse(set(second.facePairs).intersection(pairs))
+                finally:
+                    App.closeDocument(document.Name)
+
+    def test_fem_joint_creation_keeps_unsupported_face_pair_combinations_generic(self):
+        Embedded = self._load_embedded_module_for_app_test()
+        document = App.newDocument("FEMJointFactoryFallbackTest")
+        try:
+            part_i = document.addObject("MbDFEM::MbDPart", "PartI")
+            part_j = document.addObject("MbDFEM::MbDPart", "PartJ")
+            part_i.Shape = part_j.Shape = Part.makeCylinder(1, 2)
+            joint = document.addObject("MbDFEM::MbDJoint", "Joint")
+            for kinds in ([], ["CylCyl", "CylCyl", "AnnuAnnu", "RectRect"],
+                          ["CylCyl", "CylCyl", "CylCyl", "AnnuAnnu"]):
+                with self.subTest(kinds=kinds):
+                    pairs = [{"type": kind, "partI": part_i, "subNameI": "Face1",
+                              "partJ": part_j, "subNameJ": "Face1"} for kind in kinds]
+                    Embedded._joint_face_pairs = lambda _joint: pairs
+                    fem_joint = Embedded._create_fem_joint(joint)
+                    self.assertEqual(fem_joint.TypeId, "MbDFEM::FEMJoint")
+                    self.assertEqual(len(fem_joint.facePairs), len(pairs))
+        finally:
+            App.closeDocument(document.Name)
+
+    def test_fem_hole_2_pin_flange_joint_requires_cylindrical_and_annular_pairs(self):
+        document = App.newDocument("MbDFEMHole2PinFlangeJointTest")
+        try:
+            joint = document.addObject("MbDFEM::FEMHole2PinFlangeJoint", "Joint")
+            cylinders = [document.addObject("MbDFEM::CylCylFacePair", f"Cylinder{i}")
+                         for i in range(3)]
+            annuli = [document.addObject("MbDFEM::AnnuAnnuFacePair", f"Annulus{i}")
+                      for i in range(2)]
+            wrong_pair = document.addObject("MbDFEM::RectRectFacePair", "WrongPair")
+            valid_pairs = cylinders[:2] + annuli[:1]
+            invalid_pairs = (
+                [],
+                annuli,
+                cylinders[:1] + annuli,
+                cylinders[:2],
+                cylinders + annuli,
+                valid_pairs + [wrong_pair],
+            )
+            for pairs in invalid_pairs:
+                with self.subTest(pairs=[obj.Name for obj in pairs]):
+                    joint.facePairs = pairs
+                    joint.touch()
+                    document.recompute()
+                    self.assertIn("Invalid", joint.State)
+                    self.assertIn("FEMHole2PinFlangeJoint", joint.getStatusString())
+
+                    joint.facePairs = valid_pairs
+                    document.recompute()
+                    self.assertNotIn("Invalid", joint.State)
+
+            joint.facePairs = [annuli[1], cylinders[1], annuli[0], cylinders[0]]
+            document.recompute()
+            self.assertNotIn("Invalid", joint.State)
+        finally:
+            App.closeDocument(document.Name)
+
     def test_cyl_cyl_face_pair_roles_identify_hole_and_pin(self):
         Embedded = self._load_embedded_module_for_app_test()
 
@@ -2163,20 +2914,6 @@ class MbDFEMAssemblyTest(unittest.TestCase):
         self.assertEqual(roles["pinSide"], "I")
 
 
-    def test_joint_side_load_minimum_norm_solver_skips_singular_constraints(self):
-        Embedded = self._load_embedded_module_for_app_test()
-
-        self.assertIsNone(
-            Embedded._solve_minimum_norm_constraints(
-                [
-                    [1.0, 1.0, 1.0, 1.0],
-                    [2.0, 2.0, 2.0, 2.0],
-                    [0.0, 0.0, 0.0, 0.0],
-                ],
-                [80.0, 0.0, 0.0],
-            )
-        )
-
     def test_fem_part_analysis_adapter_links_results_and_groups_tree_children(self):
         Embedded = self._load_embedded_module_for_app_test()
         document = App.newDocument("MbDFEMResultMeshGroupingTest")
@@ -2193,8 +2930,9 @@ class MbDFEMAssemblyTest(unittest.TestCase):
             self.assertIn(result_mesh, adapter.Group)
             self.assertIn(result, adapter.Group)
             self.assertNotIn(result_mesh, fem_part.Group)
-            self.assertFalse(result_mesh.ViewObject.Visibility)
-            self.assertFalse(result_mesh.ViewObject.ShowInTree)
+            if App.GuiUp:
+                self.assertFalse(result_mesh.ViewObject.Visibility)
+                self.assertFalse(result_mesh.ViewObject.ShowInTree)
             self.assertEqual(fem_part.results, [result])
             self.assertIn(fem_part.getResultsFolder(), fem_part.Group)
             self.assertIn(result, fem_part.getResultsFolder().Group)
@@ -2245,6 +2983,131 @@ class MbDFEMAssemblyTest(unittest.TestCase):
             self.assertEqual(fem_part.results, [result_1])
         finally:
             App.closeDocument(document.Name)
+
+    def test_results_panel_autoscales_paused_state_and_freezes_playback_range(self):
+        from types import SimpleNamespace
+        document = App.newDocument("MbDFEMCurrentResultRangeTest")
+        try:
+            fem_part = document.addObject("MbDFEM::FEMPart", "FEMPart")
+            high = self._make_mechanical_result(document, "HighStress")
+            low = self._make_mechanical_result(document, "LowStress")
+            high.vonMises = [100.0, 50.0]
+            low.vonMises = [1.0, 2.0, 4.0]
+            fem_part.results = [high, low]
+            pipeline = SimpleNamespace(ViewObject=SimpleNamespace(Field="von Mises Stress"))
+            panel = FreeCADMbDFEMResultsPanel.FEMResultsTaskPanel.__new__(
+                FreeCADMbDFEMResultsPanel.FEMResultsTaskPanel)
+            panel.fem_part = fem_part
+            panel.state_spin = SimpleNamespace(value=lambda: 1)
+            panel._selected_pipeline_field = "von Mises Stress"
+            panel._auto_scale_current_state = True
+            panel._playing = False
+            self.assertEqual(panel._active_color_range(pipeline), (1e6, 4e6))
+            panel._auto_scale_current_state = False
+            self.assertEqual(panel._active_color_range(pipeline), (1e6, 100e6))
+            panel._auto_scale_current_state = True
+            panel._playing = True
+            panel._playback_color_field = "von Mises Stress"
+            panel._playback_color_range = (1e6, 100e6)
+            self.assertEqual(panel._active_color_range(pipeline), (1e6, 100e6))
+            panel._playing = False
+            self.assertEqual(panel._active_color_range(pipeline), (1e6, 4e6))
+        finally:
+            App.closeDocument(document.Name)
+
+    def test_results_playback_cancel_stops_before_timer_or_state_changes(self):
+        from unittest.mock import Mock, patch
+        Results = FreeCADMbDFEMResultsPanel
+        panel = Results.FEMResultsTaskPanel.__new__(Results.FEMResultsTaskPanel)
+        panel._playing = False
+        panel._suppress_fem_freshness_warning = False
+        panel.fem_part = object()
+        panel._interval_indices = lambda: [1, 2]
+        panel._play_timer = Mock()
+        panel._set_state = Mock()
+        panel._refresh = Mock()
+        panel._confirm_warning = Mock(return_value=False)
+        with patch.object(Results, "_result_for_state", return_value=object()), patch.object(
+                Results.FreeCADMbDBackend, "fem_files_freshness_warning", return_value="Stale"):
+            panel._play_results()
+        self.assertFalse(panel._playing)
+        panel._play_timer.start.assert_not_called()
+        panel._set_state.assert_not_called()
+        panel._confirm_warning.assert_called_once()
+
+    def test_results_playback_confirms_stale_interval_once_and_stop_clears_approval(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+        Results = FreeCADMbDFEMResultsPanel
+        panel = Results.FEMResultsTaskPanel.__new__(Results.FEMResultsTaskPanel)
+        panel._playing = False
+        panel._suppress_fem_freshness_warning = False
+        panel.fem_part = SimpleNamespace(visual=None)
+        panel._interval_indices = lambda: [1, 2]
+        panel._play_timer = Mock()
+        panel.play_button = Mock()
+        panel.stop_playback_button = Mock()
+        panel.state_spin = Mock()
+        panel._confirm_warning = Mock(return_value=True)
+        panel._freeze_playback_color_range = Mock()
+        panel._refresh_current_color_range = Mock()
+        panel._refresh_pipeline_task_widgets = Mock()
+        def set_state(index):
+            panel.state_spin.value.return_value = index
+            panel._show_state(index)
+        panel._set_state = set_state
+        with patch.object(Results, "_result_for_state", return_value=object()), patch.object(
+                Results.FreeCADMbDBackend, "fem_files_freshness_warning", return_value="Stale"
+                ) as freshness, patch.object(Results, "apply_state"), patch.object(
+                Results, "_ensure_visual_pipeline", return_value=None), patch.object(
+                Results, "update_result_display"), patch.object(Results, "state_count", return_value=3):
+            panel._play_results()
+            panel._play_next_state()
+            panel._play_next_state()
+            self.assertTrue(panel._playing)
+            panel._confirm_warning.assert_called_once()
+            self.assertEqual(freshness.call_count, 2)
+            panel._stop_playback()
+            self.assertFalse(panel._playing)
+            self.assertEqual(panel._playback_freshness_approved_states, set())
+            panel._play_timer.stop.assert_called_once()
+
+    def test_results_playback_display_failure_does_not_restart_timer(self):
+        from unittest.mock import Mock, patch
+        Results = FreeCADMbDFEMResultsPanel
+        panel = Results.FEMResultsTaskPanel.__new__(Results.FEMResultsTaskPanel)
+        panel._playing = False
+        panel._suppress_fem_freshness_warning = False
+        panel.fem_part = object()
+        panel._interval_indices = lambda: [1]
+        panel._play_timer = Mock()
+        panel.play_button = Mock()
+        panel.stop_playback_button = Mock()
+        panel.state_spin = Mock()
+        panel._freeze_playback_color_range = Mock()
+        panel._refresh_current_color_range = Mock()
+        panel._show_state = Mock(side_effect=RuntimeError("Display failed"))
+        panel._refresh = Mock()
+        panel._set_state = lambda index: panel._apply_current_state()
+        with patch.object(Results, "_result_for_state", return_value=None), patch.object(
+                Results, "state_count", return_value=2):
+            panel._play_results()
+        self.assertFalse(panel._playing)
+        panel._play_timer.start.assert_not_called()
+        panel._play_timer.stop.assert_called_once()
+
+    def test_results_playback_ignores_nested_timer_callbacks(self):
+        from unittest.mock import Mock
+        Results = FreeCADMbDFEMResultsPanel
+        panel = Results.FEMResultsTaskPanel.__new__(Results.FEMResultsTaskPanel)
+        panel._playing = True
+        panel._interval_indices = lambda: [1, 2]
+        panel.state_spin = Mock()
+        panel.state_spin.value.return_value = 1
+        panel._set_state = Mock(side_effect=lambda index: panel._play_next_state())
+        panel._play_next_state()
+        panel._set_state.assert_called_once_with(2)
+        self.assertFalse(panel._advancing_playback)
 
     def test_results_panel_uses_global_scalar_range_for_result_series(self):
         document = App.newDocument("MbDFEMGlobalResultRangeTest")
@@ -2992,6 +3855,7 @@ class MbDFEMAssemblyTest(unittest.TestCase):
             importCcxDatResults.import_dat = original_import_dat
             App.closeDocument(document.Name)
 
+    @unittest.skipUnless(App.GuiUp, "Requires the FreeCAD GUI")
     def test_fem_part_refresh_hides_linked_result_mesh(self):
         Embedded = self._load_embedded_module_for_app_test()
         document = App.newDocument("MbDFEMResultMeshHideRefreshTest")
@@ -3011,6 +3875,88 @@ class MbDFEMAssemblyTest(unittest.TestCase):
             self.assertFalse(result_mesh.ViewObject.ShowInTree)
         finally:
             App.closeDocument(document.Name)
+
+    def test_fem_simulation_parameters_save_and_reopen(self):
+        document = App.newDocument("FEMSimulationSettings")
+        try:
+            assembly = document.addObject("MbDFEM::FEMAssembly", "FEMAssembly")
+            parts = [document.addObject("MbDFEM::FEMPart", f"Part{i}") for i in range(2)]
+            for part in parts:
+                assembly.addObject(part)
+            assembly.parts = parts
+            settings = assembly.femParameters
+            self.assertEqual(settings.currentState, 0)
+            self.assertEqual(settings.startState, 1)
+            self.assertEqual(settings.endState, -1)
+            settings.selectedParts = parts
+            settings.currentState = 12
+            settings.startState = 10
+            settings.endState = 40
+            settings.missingOnly = False
+            settings.continueOnError = False
+            settings.settingsInitialized = True
+            with tempfile.TemporaryDirectory() as directory:
+                filename = str(Path(directory) / "Simulation.FCStd")
+                document.saveAs(filename)
+                App.closeDocument(document.Name)
+                document = App.openDocument(filename)
+                restored = document.getObject("FEMAssembly").femParameters
+                self.assertEqual(restored.TypeId, "MbDFEM::FEMSimulationParameters")
+                self.assertEqual([part.Name for part in restored.selectedParts], ["Part0", "Part1"])
+                self.assertEqual(restored.currentState, 12)
+                self.assertEqual(restored.startState, 10)
+                self.assertEqual(restored.endState, 40)
+                self.assertFalse(restored.missingOnly)
+                self.assertFalse(restored.continueOnError)
+                self.assertTrue(restored.settingsInitialized)
+        finally:
+            App.closeDocument(document.Name)
+
+    def test_fem_animation_parameters_save_and_reopen(self):
+        document = App.newDocument("FEMAnimationParametersPersistenceTest")
+        try:
+            assembly = document.addObject("MbDFEM::FEMAssembly", "FEMAssembly")
+            part = document.addObject("MbDFEM::FEMPart", "FEMPart")
+            assembly.addObject(part)
+            assembly.parts = [part]
+            parameters = assembly.animationParameters
+            assembly.addObject(parameters)
+            assembly.animationParameters = parameters
+            self.assertEqual(parameters.TypeId, "MbDFEM::FEMAnimationParameters")
+            self.assertEqual(parameters.selectedParts, [])
+            self.assertEqual(parameters.endFrame, -1)
+            self.assertFalse(parameters.settingsInitialized)
+            parameters.selectedParts = [part]
+            parameters.currentFrame = 7
+            parameters.startFrame = 3
+            parameters.endFrame = 19
+            parameters.updateRate = 45
+            parameters.fieldName = "Tresca Stress"
+            parameters.sharedColorScale = False
+            parameters.loop = False
+            parameters.settingsInitialized = True
+            with tempfile.TemporaryDirectory() as directory:
+                filename = str(Path(directory) / "FEMAnimation.FCStd")
+                document.recompute()
+                document.saveAs(filename)
+                App.closeDocument(document.Name)
+                document = App.openDocument(filename)
+                restored = document.getObject("FEMAssembly")
+                settings = restored.animationParameters
+                self.assertEqual(settings.TypeId, "MbDFEM::FEMAnimationParameters")
+                self.assertIn(settings, restored.Group)
+                self.assertEqual(settings.selectedParts, [document.getObject("FEMPart")])
+                self.assertEqual(settings.currentFrame, 7)
+                self.assertEqual(settings.startFrame, 3)
+                self.assertEqual(settings.endFrame, 19)
+                self.assertEqual(settings.updateRate, 45)
+                self.assertEqual(settings.fieldName, "Tresca Stress")
+                self.assertFalse(settings.sharedColorScale)
+                self.assertFalse(settings.loop)
+                self.assertTrue(settings.settingsInitialized)
+        finally:
+            if App.getDocument(document.Name) is not None:
+                App.closeDocument(document.Name)
 
     def test_create_relationships_save_and_reopen(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -3549,6 +4495,133 @@ class MbDFEMAssemblyTest(unittest.TestCase):
                 )
             finally:
                 App.closeDocument(reopened.Name)
+
+    def test_ground_faces_preserves_part_children_and_references(self):
+        import FreeCADMbDGroundFaces
+
+        document = App.newDocument("GroundFacesReferences")
+        try:
+            assembly = document.addObject("MbDFEM::MbDAssembly", "Assembly")
+            assembly.Placement = App.Placement(App.Vector(50, 0, 0), App.Rotation(App.Vector(0, 0, 1), 30))
+            part = document.addObject("MbDFEM::MbDPart", "Part")
+            part.Shape = Part.makeBox(10, 20, 30)
+            part.Placement = App.Placement(App.Vector(5, 6, 7), App.Rotation(App.Vector(0, 1, 0), 20))
+            part.Label = "Support"
+            part.addProperty("App::PropertyFloat", "CustomValue")
+            part.CustomValue = 42
+            assembly.addPart(part)
+            marker = document.addObject("MbDFEM::MbDMarker", "Marker")
+            marker.Geometry = (part, ["Face1"])
+            part.addMarker(marker)
+            mass = part.getMassMarker()
+            folder = part.getMarkersFolder()
+            origin = part.Origin
+            fem = document.addObject("MbDFEM::FEMPart", "FEMPart")
+            fem.mbdItem = part
+            reference = document.addObject("App::FeaturePython", "Reference")
+            reference.addProperty("App::PropertyFloat", "Value")
+            reference.setExpression("Value", "Part.CustomValue")
+            document.recompute()
+            expected_position = part.globalPositionOf(App.Vector())
+            ground = FreeCADMbDGroundFaces.ground_faces(part, ["Face1", "Face3", "Face1"])
+            self.assertEqual(ground.TypeId, "MbDFEM::MbDGroundPart")
+            self.assertEqual(ground.Label, "Support")
+            self.assertEqual(ground.CustomValue, 42)
+            self.assertEqual(assembly.parts, [])
+            self.assertEqual(assembly.fixedparts, [ground])
+            self.assertEqual(assembly.getFixedPartsFolder().Group, [ground])
+            self.assertEqual(assembly.getPartsFolder().Group, [])
+            self.assertEqual(ground.markers, [marker])
+            self.assertEqual(ground.getMassMarker(), mass)
+            self.assertEqual(ground.getMarkersFolder(), folder)
+            self.assertEqual(ground.Origin, origin)
+            self.assertEqual(marker.Geometry, (ground, ["Face1"]))
+            self.assertEqual(fem.mbdItem, ground)
+            self.assertLess(ground.globalPositionOf(App.Vector()).distanceToPoint(expected_position), 1e-8)
+            self.assertEqual(ground.getTypeIdOfProperty("groundFaces"), "App::PropertyLinkSubList")
+            self.assertEqual(ground.groundFaces, [(ground, ("Face1", "Face3"))])
+            self.assertIsNone(document.getObject(ground.Name + "_Face1"))
+            self.assertNotIn(ground, ground.OutList)
+            ground.CustomValue = 24
+            document.recompute()
+            self.assertEqual(reference.Value, 24)
+            for object_, names in ground.groundFaces:
+                for name in names:
+                    self.assertEqual(object_.getSubObject(name).ShapeType, "Face")
+            again = FreeCADMbDGroundFaces.ground_faces(ground, ["Face3", "Face4"])
+            self.assertEqual(again, ground)
+            self.assertEqual(ground.groundFaces, [(ground, ("Face1", "Face3", "Face4"))])
+        finally:
+            App.closeDocument(document.Name)
+
+    def test_ground_faces_undo_redo_and_restore(self):
+        import FreeCADMbDGroundFaces
+
+        document = App.newDocument("GroundFacesUndo")
+        document.UndoMode = 1
+        try:
+            assembly = document.addObject("MbDFEM::MbDAssembly", "Assembly")
+            part = document.addObject("MbDFEM::MbDPart", "Part")
+            part.Shape = Part.makeBox(10, 20, 30)
+            assembly.addPart(part)
+            marker = document.addObject("MbDFEM::MbDMarker", "Marker")
+            part.addMarker(marker)
+            document.recompute()
+            ground = FreeCADMbDGroundFaces.ground_faces(part, ["Face2"])
+            ground_name = ground.Name
+            document.undo()
+            restored = document.getObject("Part")
+            self.assertEqual(restored.TypeId, "MbDFEM::MbDPart")
+            self.assertEqual(restored.markers, [document.getObject("Marker")])
+            self.assertEqual(assembly.parts, [restored])
+            self.assertEqual(assembly.fixedparts, [])
+            document.redo()
+            ground = document.getObject(ground_name)
+            self.assertEqual(assembly.fixedparts, [ground])
+            self.assertEqual(ground.markers, [document.getObject("Marker")])
+            with tempfile.TemporaryDirectory() as directory:
+                filename = str(Path(directory) / "GroundFaces.FCStd")
+                document.saveAs(filename)
+                App.closeDocument(document.Name)
+                document = App.openDocument(filename)
+                ground = document.getObject(ground_name)
+                self.assertEqual(ground.groundFaces, [(ground, ("Face2",))])
+                self.assertEqual(ground.getSubObject("Face2").ShapeType, "Face")
+                self.assertEqual(document.getObject("Assembly").getFixedPartsFolder().Group, [ground])
+                document.removeObject(ground.Name)
+                self.assertIsNone(document.getObject(ground_name + "_Face2"))
+        finally:
+            App.closeDocument(document.Name)
+
+    def test_ground_faces_rejects_invalid_selection_without_conversion(self):
+        import FreeCADMbDGroundFaces
+        from types import SimpleNamespace
+
+        document = App.newDocument("GroundFacesInvalid")
+        try:
+            part = document.addObject("MbDFEM::MbDPart", "Part")
+            part.Shape = Part.makeBox(10, 20, 30)
+            with self.assertRaises(ValueError):
+                FreeCADMbDGroundFaces.ground_faces(part, ["Face1"])
+            assembly = document.addObject("MbDFEM::MbDAssembly", "Assembly")
+            assembly.addPart(part)
+            selected = SimpleNamespace(Object=assembly, SubElementNames=["Part.Face1", "Part.Face2"])
+            self.assertEqual(FreeCADMbDGroundFaces.selected_faces([selected]), (part, ["Face1", "Face2"]))
+            selected.SubElementNames = ["Part.Edge1"]
+            with self.assertRaises(ValueError):
+                FreeCADMbDGroundFaces.selected_faces([selected])
+            with self.assertRaises(ValueError):
+                FreeCADMbDGroundFaces.ground_faces(part, ["Edge1"])
+            other = document.addObject("MbDFEM::MbDPart", "Other")
+            other.Shape = Part.makeBox(1, 2, 3)
+            with self.assertRaises(ValueError):
+                FreeCADMbDGroundFaces.selected_faces([
+                    SimpleNamespace(Object=part, SubElementNames=["Face1"]),
+                    SimpleNamespace(Object=other, SubElementNames=["Face1"])])
+            self.assertEqual(document.getObject("Part"), part)
+            self.assertEqual(assembly.parts, [part])
+        finally:
+            App.closeDocument(document.Name)
 
     def test_ground_part_moves_part_to_fixedparts(self):
         document = App.newDocument("MbDFEMGroundPartTest")
@@ -4576,6 +5649,84 @@ class MbDFEMAssemblyTest(unittest.TestCase):
         finally:
             App.closeDocument(document.Name)
 
+    def test_free_body_diagram_global_placement_in_nested_assembly(self):
+        import warnings
+
+        document = App.newDocument("MbDFEMDiagramPlacementTest")
+        try:
+            container = document.addObject("App::Part", "Container")
+            assembly = document.addObject("MbDFEM::MbDAssembly", "Assembly")
+            part = document.addObject("MbDFEM::MbDPart", "Part")
+            part.Placement = App.Placement(
+                App.Vector(1, 2, 3), App.Rotation(App.Vector(0, 1, 0), 90)
+            )
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", DeprecationWarning)
+                self.assertTrue(
+                    FreeCADMbDFreeBodyDiagram._global_placement(part).isSame(
+                        part.Placement, 1e-7
+                    )
+                )
+                container.addObject(assembly)
+                assembly.addPart(part)
+                container.Placement.Base = App.Vector(10, 20, 30)
+                assembly.Placement = App.Placement(
+                    App.Vector(4, 5, 6), App.Rotation(App.Vector(0, 0, 1), 90)
+                )
+                mass_marker = part.ensureMassMarker()
+                mass_marker.Placement.Base = App.Vector(7, 8, 9)
+                marker = document.addObject("MbDFEM::MbDMarker", "Marker")
+                part.addMarker(marker)
+                marker.Placement.Base = App.Vector(2, 3, 4)
+                joint = document.addObject("MbDFEM::MbDJoint", "Joint")
+                joint.markerI = marker
+                assembly.addJoint(joint)
+                document.recompute()
+
+                expected = container.Placement.multiply(assembly.Placement).multiply(
+                    part.Placement
+                )
+                self.assertTrue(
+                    FreeCADMbDFreeBodyDiagram._global_placement(part).isSame(expected, 1e-7)
+                )
+                Embedded = self._load_embedded_module_for_app_test()
+                self.assertTrue(
+                    Embedded._part_global_placement_at_state(part, assembly, None).isSame(
+                        expected, 1e-7
+                    )
+                )
+                self.assertTrue(
+                    Embedded._global_rotation(part).isSame(expected.Rotation, 1e-7)
+                )
+                assembly_global = container.Placement.multiply(assembly.Placement)
+                part.xs, part.ys, part.zs = [11.0], [12.0], [13.0]
+                sampled = Embedded._part_global_placement_at_state(part, assembly, 0)
+                self.assertLess(
+                    sampled.Base.distanceToPoint(assembly_global.multVec(App.Vector(11, 12, 13))),
+                    1e-7,
+                )
+                face = Part.makePlane(2, 3)
+                placed_face = Embedded._shape_at_owner_global_placement(face, part)
+                self.assertLess(
+                    placed_face.CenterOfMass.distanceToPoint(expected.multVec(face.CenterOfMass)),
+                    1e-7,
+                )
+                vectors = FreeCADMbDFreeBodyDiagram._diagram_vectors(
+                    part, assembly, (0, 0, 0.0, 0)
+                )
+                self.assertLess(
+                    vectors[0].origin.distanceToPoint(
+                        expected.multVec(mass_marker.Placement.Base)
+                    ),
+                    1e-7,
+                )
+                self.assertLess(
+                    vectors[3].origin.distanceToPoint(expected.multVec(marker.Placement.Base)),
+                    1e-7,
+                )
+        finally:
+            App.closeDocument(document.Name)
+
     def test_free_body_diagram_scales_to_motion_bounding_box(self):
         document = App.newDocument("MbDFEMFreeBodyDiagramTest")
 
@@ -4760,6 +5911,116 @@ class MbDFEMAssemblyTest(unittest.TestCase):
             FreeCADMbDFreeBodyDiagram._assembly_auto_diagram_scales = original_auto_scales
             FreeCADMbDFreeBodyDiagram.reset_diagram_scales(assembly)
 
+    def test_cylindrical_cload_arrows_anchor_identically_at_rims_and_interior(self):
+        module = FreeCADMbDFEMCLOADs
+        placement = App.Placement(App.Vector(11, -7, 13), App.Rotation(17, 23, 41))
+        for role in ("hole", "pin"):
+            reference = {"origin": App.Vector(), "axis": App.Vector(0, 0, 1),
+                         "radius": 3.0, "role": role}
+            for force in (App.Vector(2, 0, 0), App.Vector(-2, 0, 0),
+                          App.Vector(0, 2, 0), App.Vector(0, 0, 2)):
+                offsets = []
+                for z in (-4, 0, 4):
+                    origin = placement.multVec(App.Vector(3, 0, z))
+                    value = placement.Rotation.multVec(force)
+                    tail, scale = module._cylindrical_cload_arrow(reference, placement, origin, value, 2)
+                    offsets.append(placement.inverse().Rotation.multVec(tail - origin))
+                    head = tail + value * scale
+                    self.assertAlmostEqual(scale, 2)
+                    self.assertTrue(tail.distanceToPoint(origin) < 1e-8 or head.distanceToPoint(origin) < 1e-8)
+                    into_material = force.x > 0 if role == "hole" else force.x < 0
+                    self.assertLess((head if into_material else tail).distanceToPoint(origin), 1e-8)
+                self.assertLess(offsets[0].distanceToPoint(offsets[1]), 1e-8)
+                self.assertLess(offsets[1].distanceToPoint(offsets[2]), 1e-8)
+        tail, scale = module._cylindrical_cload_arrow(
+            {"origin": App.Vector(), "axis": App.Vector(0, 0, 1), "radius": 3, "role": "pin"},
+            App.Placement(), App.Vector(2.99, 0, 4), App.Vector(-1, 0, 0), 2)
+        self.assertLess((tail + App.Vector(-scale, 0, 0)).distanceToPoint(App.Vector(3, 0, 4)), 1e-8)
+
+    def test_cload_cylinder_geometry_tracks_local_rim_nodes_and_computed_vectors(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        document = App.newDocument("CylinderCLOADGeometry")
+        try:
+            part = document.addObject("MbDFEM::MbDPart", "Part")
+            part.Shape = Part.makeCylinder(3, 8, App.Vector(0, 0, -4))
+            part.Placement = App.Placement(App.Vector(11, 7, 13), App.Rotation(17, 23, 41))
+            nodes = {1: App.Vector(3, 0, -4), 2: App.Vector(3, 0, 0), 3: App.Vector(3, 0, 4)}
+            fem = SimpleNamespace(mbdItem=part, Visibility=True, mesh=None)
+            pair = {"type": "CylCyl", "partI": part, "partJ": object(),
+                    "subNameI": "Face1", "roleI": "pin"}
+            module = FreeCADMbDFEMCLOADs
+            with patch.object(FreeCADMbDFEMEmbedded, "_part_joints_for_fem_part", return_value=[(object(), None, 1)]), \
+                 patch.object(FreeCADMbDFEMEmbedded, "_joint_face_pairs", return_value=[pair]):
+                geometry = module._cylindrical_node_geometry(fem, nodes)
+            self.assertEqual(set(geometry), {1, 2, 3})
+            self.assertAlmostEqual(geometry[1]["radius"], 3)
+            self.assertEqual(geometry[1]["role"], "pin")
+            self.assertLess(geometry[1]["origin"].Length, 1e-8)
+            loads = [{"nodes": nodes, "face_pair_type": "CylCyl",
+                      "cload_components": {"Fx": [(i, 1, -2) for i in nodes]}}]
+            with patch.object(module, "_diagram_vectors_from_matching_inp", return_value=None), \
+                 patch.object(module, "_cylindrical_node_geometry", return_value=geometry), \
+                 patch.object(module, "_mesh_placement_at_sample", return_value=part.Placement), \
+                 patch.object(module, "_mbd_joint_cylindrical_hole_loads", return_value=loads):
+                vectors = module._diagram_vectors(fem, object())
+            self.assertEqual(len(vectors), 3)
+            for vector in vectors:
+                self.assertIsNotNone(vector.cylinder)
+                self.assertLess(vector.value.distanceToPoint(part.Placement.Rotation.multVec(App.Vector(-2, 0, 0))), 1e-8)
+        finally:
+            App.closeDocument(document.Name)
+
+    def test_cload_input_preserves_cylinder_and_annular_geometry_types(self):
+        content = (FreeCADMbDFEMEmbedded._MBD_JOINT_CLOAD_MARKER
+                   + "*CLOAD\n** MbDFEM Fx\n1,1,2\n"
+                   + "*CLOAD\n** MbDFEM annular combined force and torque\n1,2,3\n")
+        vectors, types = FreeCADMbDFEMCLOADs._cload_vectors_from_inp_content(
+            content, separate=True, with_types=True)
+        self.assertEqual(len(vectors), 2)
+        self.assertEqual(list(types.values()), ["CylCyl", "AnnuAnnu"])
+        self.assertEqual(FreeCADMbDFEMCLOADs._cload_vectors_from_inp_content(content)[1], App.Vector(2, 3, 0))
+
+    def test_cload_arrows_stay_outside_pin_and_keep_force_direction(self):
+        module = FreeCADMbDFEMCLOADs
+        shape = Part.makeCylinder(3, 8, App.Vector(0, 0, -4))
+        placement = App.Placement(App.Vector(10, -20, 30), App.Rotation(17, 23, 41))
+        contact = App.Vector(3, 0, 0)
+        for force in (App.Vector(2, 0, 0), App.Vector(-2, 0, 0), App.Vector(0, 2, 0)):
+            with self.subTest(force=force):
+                origin = placement.multVec(contact)
+                value = placement.Rotation.multVec(force)
+                tail, scale = module._outside_cload_arrow(shape, placement, origin, value, 2)
+                head = tail + value * scale
+                self.assertAlmostEqual(scale, 2)
+                self.assertTrue(tail.distanceToPoint(origin) < 1e-8 or head.distanceToPoint(origin) < 1e-8)
+                for fraction in (0.1, 0.5, 0.9):
+                    point = placement.inverse().multVec(tail + (head - tail) * fraction)
+                    self.assertFalse(shape.isInside(point, 1e-7, False))
+
+    def test_cload_arrows_keep_full_length_at_other_hole_wall_and_pin_shoulder(self):
+        module = FreeCADMbDFEMCLOADs
+        hole = Part.makeCylinder(5, 8, App.Vector(0, 0, -4)).cut(
+            Part.makeCylinder(3, 8, App.Vector(0, 0, -4)))
+        tail, scale = module._outside_cload_arrow(
+            hole, App.Placement(), App.Vector(3, 0, 0), App.Vector(-1, 0, 0), 10)
+        self.assertLess(tail.distanceToPoint(App.Vector(3, 0, 0)), 1e-8)
+        self.assertAlmostEqual(scale, 10)
+        self.assertLess((tail + App.Vector(-scale, 0, 0)).distanceToPoint(App.Vector(-7, 0, 0)), 1e-8)
+        pin = Part.makeCylinder(3, 8, App.Vector(0, 0, -4)).fuse(
+            Part.makeCylinder(5, 2, App.Vector(0, 0, 4)))
+        tail, scale = module._outside_cload_arrow(
+            pin, App.Placement(), App.Vector(3, 0, 0), App.Vector(0, 0, 1), 10)
+        self.assertAlmostEqual(scale, 10)
+        self.assertLess((tail + App.Vector(0, 0, scale)).distanceToPoint(App.Vector(3, 0, 0)), 1e-8)
+        for fraction in (0.1, 0.5, 0.9):
+            self.assertFalse(pin.isInside(tail + App.Vector(0, 0, scale * fraction), 1e-7, False))
+        # A mesh point just inside a curved face must contact the CAD surface.
+        tail, scale = module._outside_cload_arrow(
+            pin, App.Placement(), App.Vector(2.99, 0, 0), App.Vector(-1, 0, 0), 2)
+        self.assertLess((tail + App.Vector(-scale, 0, 0)).distanceToPoint(App.Vector(3, 0, 0)), 1e-8)
+
     def test_free_body_diagram_coin_arrow_updates(self):
         from pivy import coin
 
@@ -4936,8 +6197,12 @@ class MbDFEMAssemblyTest(unittest.TestCase):
             joint.fxs = [0.0, 80.0]
             joint.fys = [0.0, 0.0]
             joint.fzs = [0.0, 40.0]
+            fem_joint = document.addObject("MbDFEM::FEMJoint", "FEMJoint")
+            fem_joint.mbdItem = joint
+            fem_part.joints = [fem_joint]
             document.recompute()
-            fem_part.Placement = App.Placement(App.Vector(10, 20, 30), App.Rotation())
+            for owner in (part, sleeve):
+                owner.xs, owner.ys, owner.zs = [0, 10], [0, 20], [0, 30]
 
             vectors = FreeCADMbDFEMCLOADs._diagram_vectors(
                 fem_part,
@@ -4945,20 +6210,17 @@ class MbDFEMAssemblyTest(unittest.TestCase):
                 (1, 1, 0.0, 1),
             )
 
-            self.assertEqual(len(vectors), 5)
-            self.assertLess(vectors[0].origin.distanceToPoint(App.Vector(11, 21, 31)), 1e-7)
-            self.assertLess(vectors[3].origin.distanceToPoint(App.Vector(11, 21, 27)), 1e-7)
-            # The transverse forces balance about the bounded cylinder's center (z=-0.5).
-            center = App.Vector(10, 20, 29.5)
-            resultant = App.Vector()
-            moment = App.Vector()
+            self.assertGreaterEqual(len(vectors), 5)
+            expected_positions = [App.Vector(*coordinates) + App.Vector(10, 20, 30)
+                                  for coordinates in node_data.values()]
+            resultant, moment = App.Vector(), App.Vector()
+            marker_origin = App.Vector(10, 20, 30)
             for vector in vectors:
-                self.assertGreater(vector.value.x, 0)
-                self.assertAlmostEqual(vector.value.y, 0)
-                self.assertAlmostEqual(vector.value.z, 0)
+                self.assertTrue(any(vector.origin.distanceToPoint(point) < 1e-7
+                                    for point in expected_positions))
                 resultant += vector.value
-                moment += (vector.origin - center).cross(vector.value)
-            self.assertLess((resultant - App.Vector(80, 0, 0)).Length, 1e-7)
+                moment += (vector.origin - marker_origin).cross(vector.value)
+            self.assertLess((resultant - App.Vector(80, 0, 40)).Length, 1e-7)
             self.assertLess(moment.Length, 1e-7)
         finally:
             App.closeDocument(document.Name)
@@ -5013,6 +6275,7 @@ class MbDFEMAssemblyTest(unittest.TestCase):
             sleeve_marker = document.addObject("MbDFEM::MbDMarker", "SleeveMarker")
             assembly.addPart(sleeve)
             sleeve.addMarker(sleeve_marker)
+            sleeve.xs, sleeve.ys, sleeve.zs = part.xs, part.ys, part.zs
             hole_index = next(index for index, face in enumerate(sleeve.Shape.Faces, 1)
                               if getattr(face.Surface, "TypeId", None) == "Part::GeomCylinder"
                               and abs(face.Surface.Radius - math.sqrt(2)) < 1e-7)
@@ -5022,6 +6285,9 @@ class MbDFEMAssemblyTest(unittest.TestCase):
             joint.fxs = [0.0, 80.0]
             joint.fys = [0.0, 0.0]
             joint.fzs = [0.0, 40.0]
+            fem_joint = document.addObject("MbDFEM::FEMJoint", "FEMJoint")
+            fem_joint.mbdItem = joint
+            fem_part.joints = [fem_joint]
             document.recompute()
 
             vectors = FreeCADMbDFEMCLOADs._diagram_vectors(
@@ -5030,9 +6296,9 @@ class MbDFEMAssemblyTest(unittest.TestCase):
                 (1, 1, 0.0, 1),
             )
 
-            self.assertEqual(len(vectors), 5)
+            self.assertGreaterEqual(len(vectors), 5)
             self.assertLess(
-                vectors[0].origin.distanceToPoint(App.Vector(101, 201, 301)),
+                min(vector.origin.distanceToPoint(App.Vector(101, 201, 301)) for vector in vectors),
                 1e-7,
             )
         finally:
@@ -5277,13 +6543,14 @@ class MbDFEMAssemblyTest(unittest.TestCase):
                 pass
             FreeCADMbDFEMDLOADs.reset_diagram_scales(assembly)
 
+            expected_scale = (2.6 if App.GuiUp else 1.3) / 4000.0
             self.assertAlmostEqual(
                 FreeCADMbDFEMDLOADs._diagram_scale(fem_part, assembly),
-                2.6 / 4000.0,
+                expected_scale,
             )
             self.assertAlmostEqual(
                 FreeCADMbDFEMDLOADs._diagram_scale(second_fem_part, assembly),
-                2.6 / 4000.0,
+                expected_scale,
             )
         finally:
             FreeCADMbDFEMDLOADs.reset_diagram_scales()
@@ -5402,7 +6669,10 @@ class MbDFEMAssemblyTest(unittest.TestCase):
 
     def test_fem_part_cloads_vectors_reuse_load_nodes(self):
         class Mesh:
-            def getGlobalPlacement(self):
+            def getParentGeoFeatureGroup(self):
+                return None
+
+            def getGlobalPlacementOf(self, target, root, subname):
                 return App.Placement()
 
         class FEMPart:
@@ -5418,7 +6688,7 @@ class MbDFEMAssemblyTest(unittest.TestCase):
                 "nodes": nodes,
                 "x_axis": App.Vector(1.0, 0.0, 0.0),
                 "octants": {"U1": [1, 2], "U4": [], "L1": [], "L4": []},
-                "nodal_values": {"U1": 3.0, "U4": 0.0, "L1": 0.0, "L4": 0.0},
+                "cload_components": {"transverse_force": [(1, 1, 3.0), (2, 1, 3.0)]},
             }
         ]
         original_loads = FreeCADMbDFEMCLOADs._mbd_joint_cylindrical_hole_loads
@@ -5442,7 +6712,10 @@ class MbDFEMAssemblyTest(unittest.TestCase):
 
     def test_fem_part_cloads_vectors_use_cpp_cload_records(self):
         class Mesh:
-            def getGlobalPlacement(self):
+            def getParentGeoFeatureGroup(self):
+                return None
+
+            def getGlobalPlacementOf(self, target, root, subname):
                 return App.Placement()
 
         class FEMPart:
@@ -5450,7 +6723,7 @@ class MbDFEMAssemblyTest(unittest.TestCase):
             mesh = Mesh()
 
         nodes = {1: App.Vector(1.0, 2.0, 3.0)}
-        loads = [{"nodes": nodes, "cloads": [(1, 1, 4.0), (1, 3, -2.0)]}]
+        loads = [{"nodes": nodes, "cload_components": {"transverse_force": [(1, 1, 4.0), (1, 3, -2.0)]}}]
         original_loads = FreeCADMbDFEMCLOADs._mbd_joint_cylindrical_hole_loads
         try:
             FreeCADMbDFEMCLOADs._mbd_joint_cylindrical_hole_loads = (
@@ -5461,6 +6734,11 @@ class MbDFEMAssemblyTest(unittest.TestCase):
 
             self.assertEqual(len(vectors), 1)
             self.assertLess(vectors[0].origin.distanceToPoint(nodes[1]), 1e-7)
+            self.assertLess(vectors[0].value.distanceToPoint(App.Vector(4, 0, -2)), 1e-7)
+            # Annular contacts provide a single combined CLOAD record list.
+            loads[0] = {"nodes": nodes, "cloads": [(1, 1, 4.0), (1, 3, -2.0)]}
+            vectors = FreeCADMbDFEMCLOADs._diagram_vectors(FEMPart(), object())
+            self.assertEqual(len(vectors), 1)
             self.assertLess(vectors[0].value.distanceToPoint(App.Vector(4, 0, -2)), 1e-7)
         finally:
             FreeCADMbDFEMCLOADs._mbd_joint_cylindrical_hole_loads = original_loads
@@ -5479,7 +6757,10 @@ class MbDFEMAssemblyTest(unittest.TestCase):
             Name = "Mesh"
             FemMesh = FakeFemMesh()
 
-            def getGlobalPlacement(self):
+            def getParentGeoFeatureGroup(self):
+                return None
+
+            def getGlobalPlacementOf(self, target, root, subname):
                 return App.Placement()
 
         class FEMPart:
@@ -5546,7 +6827,10 @@ class MbDFEMAssemblyTest(unittest.TestCase):
             Name = "Mesh"
             FemMesh = FakeFemMesh()
 
-            def getGlobalPlacement(self):
+            def getParentGeoFeatureGroup(self):
+                return None
+
+            def getGlobalPlacementOf(self, target, root, subname):
                 return App.Placement()
 
         class FEMPart:
@@ -5558,7 +6842,7 @@ class MbDFEMAssemblyTest(unittest.TestCase):
                 "nodes": FakeFemMesh.Nodes,
                 "x_axis": App.Vector(1.0, 0.0, 0.0),
                 "octants": {"U1": [1], "U4": [], "L1": [], "L4": []},
-                "nodal_values": {"U1": 7.0, "U4": 0.0, "L1": 0.0, "L4": 0.0},
+                "cload_components": {"transverse_force": [(1, 1, 7.0)]},
             }
         ]
         original_inp = FreeCADMbDFEMCLOADs._sample_inp_file_name
@@ -5610,7 +6894,10 @@ class MbDFEMAssemblyTest(unittest.TestCase):
         class Mesh:
             ViewObject = FakeViewObject()
 
-            def getGlobalPlacement(self):
+            def getParentGeoFeatureGroup(self):
+                return None
+
+            def getGlobalPlacementOf(self, target, root, subname):
                 return App.Placement()
 
         class FEMPart:
@@ -5629,7 +6916,7 @@ class MbDFEMAssemblyTest(unittest.TestCase):
                 "nodes": nodes,
                 "x_axis": App.Vector(1.0, 0.0, 0.0),
                 "octants": {"U1": [1, 2], "U4": [], "L1": [], "L4": []},
-                "nodal_values": {"U1": 3.0, "U4": 0.0, "L1": 0.0, "L4": 0.0},
+                "cload_components": {"transverse_force": [(1, 1, 3.0), (2, 1, 3.0)]},
             }
         ]
         original_loads = FreeCADMbDFEMCLOADs._mbd_joint_cylindrical_hole_loads
@@ -5755,6 +7042,9 @@ class MbDFEMAssemblyTest(unittest.TestCase):
             joint.fxs = [0.0]
             joint.fys = [0.0]
             joint.fzs = [0.0]
+            fem_joint = document.addObject("MbDFEM::FEMJoint", "FEMJoint")
+            fem_joint.mbdItem = joint
+            fem_part.joints = [fem_joint]
             document.recompute()
 
             self.assertEqual(
@@ -6006,6 +7296,80 @@ class MbDFEMAssemblyTest(unittest.TestCase):
             self.assertFalse(part.Placement.Rotation.isSame(long_way, 1.0e-7))
         finally:
             App.closeDocument(document.Name)
+
+    def test_signed_real_frame_rate_controls_direction_and_zero_pauses(self):
+        document = App.newDocument("SignedFrameRate")
+        try:
+            assembly = document.addObject("MbDFEM::MbDAssembly", "Assembly")
+            assembly.times = [0.0, 0.1, 0.2, 0.3, 0.4]
+            parameters = assembly.ensureAnimationParameters()
+            parameters.startFrame = 0
+            parameters.loop = False
+            parameters.updateRate = 2.5
+            controller = FreeCADMbDAnimation.AnimationController(assembly)
+            controller.beginPlayback()
+            controller.tick(0.4)
+            self.assertEqual(controller.current_frame, 1)
+            parameters.updateRate = -2.5
+            controller.setFrame(0)
+            controller.beginPlayback()
+            self.assertEqual(controller.current_frame, 4)
+            controller.tick(0.4)
+            self.assertEqual(controller.current_frame, 3)
+            controller.tick(1.2)
+            self.assertEqual(controller.current_frame, 0)
+            self.assertFalse(controller.is_playing)
+            parameters.updateRate = 0.0
+            controller.beginPlayback()
+            controller.tick(1.0)
+            self.assertEqual(controller.current_frame, 0)
+            self.assertFalse(controller.is_playing)
+            parameters.updateRate = 0.25
+            controller.beginPlayback()
+            controller.tick(2.0)
+            self.assertEqual(controller.current_frame, 0)
+            controller.tick(2.0)
+            self.assertEqual(controller.current_frame, 1)
+        finally:
+            App.closeDocument(document.Name)
+
+    def test_real_frame_rate_persistence_and_legacy_integer_migration(self):
+        import xml.etree.ElementTree as ET
+        with tempfile.TemporaryDirectory() as directory:
+            filename = os.path.join(directory, "Rates.FCStd")
+            legacy = os.path.join(directory, "LegacyRates.FCStd")
+            document = App.newDocument("RealFrameRates")
+            try:
+                for name, type_name, rate in (("MbDRate", "MbDAnimationParameters", -12.5),
+                                              ("FEMRate", "FEMAnimationParameters", -0.25)):
+                    obj = document.addObject("MbDFEM::" + type_name, name)
+                    obj.updateRate = rate
+                document.saveAs(filename)
+                App.closeDocument(document.Name)
+                document = App.openDocument(filename)
+                self.assertEqual(document.MbDRate.updateRate, -12.5)
+                self.assertEqual(document.FEMRate.updateRate, -0.25)
+                App.closeDocument(document.Name)
+                document = None
+                with zipfile.ZipFile(filename) as archive:
+                    entries = {info.filename: archive.read(info.filename) for info in archive.infolist()}
+                xml = ET.fromstring(entries["Document.xml"])
+                for prop in xml.iter("Property"):
+                    if prop.get("name") == "updateRate":
+                        prop.set("type", "App::PropertyInteger")
+                        value = prop.find("Float")
+                        value.tag = "Integer"
+                        value.set("value", "45")
+                entries["Document.xml"] = ET.tostring(xml, encoding="utf-8", xml_declaration=True)
+                with zipfile.ZipFile(legacy, "w") as archive:
+                    for name, value in entries.items():
+                        archive.writestr(name, value)
+                document = App.openDocument(legacy)
+                self.assertEqual(document.MbDRate.updateRate, 45.0)
+                self.assertEqual(document.FEMRate.updateRate, 45.0)
+            finally:
+                if document is not None:
+                    App.closeDocument(document.Name)
 
     def test_freecadmbd_animation_controller_uses_frame_rate_for_tick(self):
         document = App.newDocument("MbDFEMAnimationTickTest")

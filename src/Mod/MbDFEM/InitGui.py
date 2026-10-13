@@ -14,9 +14,13 @@ import FreeCADMbDFEMEmbedded
 import FreeCADMbDFEMDLOADs
 import FreeCADMbDFreeBodyDiagram
 import FreeCADMbDAnimationPanel
+import FreeCADMbDFEMAnimation
+import FreeCADMbDFEMSimulation
+import FreeCADMbDFEMStateOverlay
 import FreeCADMbDSimulationPanel
+import FreeCADMbDGroundFaces
 
-FreeCAD.__unit_test__ += ["TestMbDFEMGui"]
+FreeCAD.__unit_test__ += ["TestMbDFEMGui", "TestMbDFEMStateOverlay"]
 
 _embedded_fem_part_view_provider_observer = None
 _true_mesh_view_states = {}
@@ -148,6 +152,7 @@ class CreateMbDAssemblyCommand:
 
 
 Gui.addCommand("MbDFEM_CreateMbDAssembly", CreateMbDAssemblyCommand())
+Gui.addCommand("MbDFEM_GroundFaces", FreeCADMbDGroundFaces.GroundFacesCommand())
 
 
 class EmbeddedFEMPartSolverViewProvider:
@@ -1103,13 +1108,18 @@ class CreateFEMAssemblyCommand:
         return fem_parts
 
     def _populate_fem_joints(self, fem_assembly, mbd_assembly, joints_folder):
-        return self._populate_fem_items(
-            fem_assembly,
-            self._mbd_items_for_fem_assembly(mbd_assembly, "joints", "MbDFEM::MbDJoint"),
-            joints_folder,
-            "MbDFEM::FEMJoint",
-            "joints",
-        )
+        import FreeCADMbDFEMEmbedded
+
+        fem_joints = []
+        for mbd_joint in self._mbd_items_for_fem_assembly(
+            mbd_assembly, "joints", "MbDFEM::MbDJoint"
+        ):
+            fem_joint = FreeCADMbDFEMEmbedded._create_fem_joint(mbd_joint)
+            self._remove_from_owner_groups(fem_joint)
+            joints_folder.addObject(fem_joint)
+            fem_joints.append(fem_joint)
+        fem_assembly.joints = fem_joints
+        return fem_joints
 
     @staticmethod
     def _marker_mbd_part(marker):
@@ -2850,6 +2860,10 @@ Gui.addCommand(
 )
 
 
+Gui.addCommand("MbDFEM_AnimateFEMResults", FreeCADMbDFEMAnimation.AnimateFEMResultsCommand())
+Gui.addCommand("MbDFEM_SimulateFEMAssembly", FreeCADMbDFEMSimulation.SimulateFEMAssemblyCommand())
+
+
 class MbDFEMWorkbench(Gui.Workbench):
     """Minimal MbDFEM workbench."""
 
@@ -2874,6 +2888,7 @@ class MbDFEMWorkbench(Gui.Workbench):
             "MbDFEM_CreateFEMAssembly",
             "MbDFEM_CreateMbDMarker",
             "MbDFEM_CreateMbDJoint",
+            "MbDFEM_GroundFaces",
         ]
         menu_commands = [
             *toolbar_commands,
@@ -2883,6 +2898,8 @@ class MbDFEMWorkbench(Gui.Workbench):
             "MbDFEM_ShowFEMPartDLOADElements",
             "MbDFEM_ShowFEMPartDLOADs",
             "MbDFEM_FreeBodyDiagram",
+            "MbDFEM_AnimateFEMResults",
+            "MbDFEM_SimulateFEMAssembly",
         ]
         self.appendToolbar("MbDFEM", toolbar_commands)
         self.appendMenu("MbDFEM", menu_commands)
@@ -2891,6 +2908,14 @@ class MbDFEMWorkbench(Gui.Workbench):
     def Activated(self):
         self._refresh_embedded_fem_part_view_providers()
 
+    def ContextMenu(self, recipient):
+        import FreeCADMbDFEMAnimation
+        import FreeCADMbDFEMSimulation
+
+        if (FreeCADMbDFEMAnimation.AnimateFEMResultsCommand.active_assembly() is not None
+                or FreeCADMbDFEMSimulation.SimulateFEMAssemblyCommand.active_assembly() is not None):
+            self.appendContextMenu("MbDFEM", ["MbDFEM_AnimateFEMResults", "MbDFEM_SimulateFEMAssembly"])
+
     def GetClassName(self):
         return "Gui::PythonWorkbench"
 
@@ -2898,3 +2923,4 @@ class MbDFEMWorkbench(Gui.Workbench):
 Gui.addWorkbench(MbDFEMWorkbench())
 FreeCADMbDFEMEmbedded.install_observer()
 FreeCADMbDFEMEmbedded.refresh_view_providers()
+FreeCADMbDFEMStateOverlay.install()

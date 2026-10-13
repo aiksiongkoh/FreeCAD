@@ -13,6 +13,10 @@ endif()
 
 set(MbDFEMGui_SRCS
     AppMbDFEMGui.cpp
+    ViewProviderAxisTriad.cpp
+    ViewProviderAxisTriad.h
+    ViewProviderFEMAnimationParameters.cpp
+    ViewProviderFEMAnimationParameters.h
     ViewProviderFEMAssembly.cpp
     ViewProviderFEMAssembly.h
     ViewProviderFEMItem.cpp
@@ -21,22 +25,20 @@ set(MbDFEMGui_SRCS
     ViewProviderFEMPart.h
     ViewProviderFEMResultsFolder.cpp
     ViewProviderFEMResultsFolder.h
-    ViewProviderAxisTriad.cpp
-    ViewProviderAxisTriad.h
-    ViewProviderUtils.cpp
-    ViewProviderUtils.h
+    ViewProviderFEMSimulationParameters.cpp
+    ViewProviderFEMSimulationParameters.h
     ViewProviderMbDAction.cpp
     ViewProviderMbDAction.h
     ViewProviderMbDAnimationParameters.cpp
     ViewProviderMbDAnimationParameters.h
     ViewProviderMbDAssembly.cpp
     ViewProviderMbDAssembly.h
+    ViewProviderMbDGravity.cpp
+    ViewProviderMbDGravity.h
     ViewProviderMbDItemIJ.cpp
     ViewProviderMbDItemIJ.h
     ViewProviderMbDJoint.cpp
     ViewProviderMbDJoint.h
-    ViewProviderMbDGravity.cpp
-    ViewProviderMbDGravity.h
     ViewProviderMbDMarker.cpp
     ViewProviderMbDMarker.h
     ViewProviderMbDMotion.cpp
@@ -45,6 +47,8 @@ set(MbDFEMGui_SRCS
     ViewProviderMbDPart.h
     ViewProviderMbDSimulationParameters.cpp
     ViewProviderMbDSimulationParameters.h
+    ViewProviderUtils.cpp
+    ViewProviderUtils.h
 )
 
 if(BUILD_FEM_VTK)
