@@ -162,10 +162,7 @@
 #include "Transactions.h"
 #include "VRMLObject.h"
 
-// If you stumble here, run the target "BuildExtractRevision" on Windows systems
-// or the Python script "SubWCRev.py" on Linux based systems which builds
-// src/Build/Version.h. Or create your own from src/Build/Version.h.in!
-#include <Build/Version.h>
+#include <Base/Version.h>
 #include "Branding.h"
 
 
@@ -1160,7 +1157,7 @@ std::vector<Document*> Application::openDocuments(const std::vector<std::string>
         Base::Console().log("{} restore time: {}\n", doc.getDocumentName(), timing.d1.count());
         Base::Console().log("{} postprocess time: {}\n", doc.getDocumentName(), timing.d2.count());
     }
-    PropertyLinkBase::updateAllElementReferences();
+    PropertyLinkBase::updateAllElementReferences(openedDocs);
     _isRestoring = false;
 
     signalFinishOpenDocument();
@@ -1382,10 +1379,7 @@ std::string Application::getNameWithVersion()
 
 bool Application::isDevelopmentVersion()
 {
-    static std::string suffix = []() constexpr {
-        return FCVersionSuffix;
-    }();
-    return suffix == "dev";
+    return Base::FCVersionInfo::IsDevelopmentVersion();
 }
 
 const std::unique_ptr<ApplicationDirectories>& Application::directories() {
@@ -2253,6 +2247,8 @@ void Application::initTypes()
     App::PropertyFrequency                  ::init();
     App::PropertyForce                      ::init();
     App::PropertyHeatFlux                   ::init();
+    App::PropertyMassMomentOfInertia        ::init();
+    App::PropertyAreaMomentOfInertia        ::init();
     App::PropertyInverseArea                ::init();
     App::PropertyInverseLength              ::init();
     App::PropertyInverseVolume              ::init();
@@ -2754,23 +2750,26 @@ void Application::initConfig(int argc, char ** argv)
     // only for 'BuildVersionMajor'.
     if (Application::Config().find("BuildVersionMajor") == Application::Config().end()) {
         std::stringstream str;
-        str << FCVersionMajor
-            << "." << FCVersionMinor
-            << "." << FCVersionPoint;
+        str << Base::FCVersionInfo::VersionMajor()
+            << "." << Base::FCVersionInfo::VersionMinor()
+            << "." << Base::FCVersionInfo::VersionPoint();
         Application::Config()["ExeVersion"         ] = str.str();
-        Application::Config()["BuildVersionMajor"  ] = FCVersionMajor;
-        Application::Config()["BuildVersionMinor"  ] = FCVersionMinor;
-        Application::Config()["BuildVersionPoint"  ] = FCVersionPoint;
-        Application::Config()["BuildVersionSuffix" ] = FCVersionSuffix;
-        Application::Config()["BuildRevision"      ] = FCRevision;
-        Application::Config()["BuildRepositoryURL" ] = FCRepositoryURL;
-        Application::Config()["BuildRevisionDate"  ] = FCRevisionDate;
-#if defined(FCRepositoryHash)
-        Application::Config()["BuildRevisionHash"  ] = FCRepositoryHash;
-#endif
-#if defined(FCRepositoryBranch)
-        Application::Config()["BuildRevisionBranch"] = FCRepositoryBranch;
-#endif
+        Application::Config()["BuildVersionMajor"  ] = Base::FCVersionInfo::VersionMajor();
+        Application::Config()["BuildVersionMinor"  ] = Base::FCVersionInfo::VersionMinor();
+        Application::Config()["BuildVersionPoint"  ] = Base::FCVersionInfo::VersionPoint();
+        Application::Config()["BuildVersionSuffix" ] = Base::FCVersionInfo::VersionSuffix();
+        Application::Config()["BuildRevision"      ] = Base::FCVersionInfo::Revision();
+        Application::Config()["BuildRepositoryURL" ] = Base::FCVersionInfo::RepositoryURL();
+        Application::Config()["BuildRevisionDate"  ] = Base::FCVersionInfo::RevisionDate();
+        if (auto hash = Base::FCVersionInfo::RepositoryHash(); !hash.empty()) {
+            Application::Config()["BuildRevisionHash"] = hash;
+        }
+        if (auto branch = Base::FCVersionInfo::RepositoryBranch(); !branch.empty()) {
+            Application::Config()["BuildRevisionBranch"] = branch;
+        }
+        if (auto type = Base::FCVersionInfo::BuildType(); !type.empty()) {
+            Application::Config()["BuildType"] = type;
+        }
     }
 
     _argc = argc;

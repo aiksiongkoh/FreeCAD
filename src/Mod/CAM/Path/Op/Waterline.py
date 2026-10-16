@@ -577,6 +577,15 @@ class ObjectWaterline(PathOp.ObjectOp):
         if prop == "Active" and obj.ViewObject:
             obj.ViewObject.signalChangeIcon()
 
+    def opDeprecationNotice(self, obj):
+        return PathOp.deprecationNotice(
+            translate("CAM_Waterline", "The Waterline operation"),
+            translate(
+                "CAM_Waterline", "the Planar Surface operation with Strategy set to 'Waterline'"
+            ),
+            stage=PathOp.DeprecationStage.Warning,
+        )
+
     def opOnDocumentRestored(self, obj):
         self.propertiesReady = False
         job = PathUtils.findParentJob(obj)
@@ -851,8 +860,8 @@ class ObjectWaterline(PathOp.ObjectOp):
                 Path.Command(
                     "G0",
                     {
-                        "X": obj.StartPoint.x,
-                        "Y": obj.StartPoint.y,
+                        "X": self.startPoint(obj).x,
+                        "Y": self.startPoint(obj).y,
                         "F": self.horizRapid,
                     },
                 )

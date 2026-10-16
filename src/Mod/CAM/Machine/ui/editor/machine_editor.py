@@ -36,6 +36,7 @@ from Machine.models.machine import (
     ToolheadType,
     AxisRole,
     WrapStrategy,
+    RotationStrategy,
 )
 from Path.Main.Gui.Editor import CodeEditor
 from Path.Post.Processor import (
@@ -173,7 +174,7 @@ class DataclassGUIGenerator:
         "origin": translate("CAM_MachineEditor", "Origin"),
         "orientation_quaternion": translate("CAM_MachineEditor", "Orientation Quaternion"),
         "tcp_supported": translate("CAM_MachineEditor", "TCP Supported"),
-        "dwo_supported": translate("CAM_MachineEditor", "DWO Supported"),
+        "rotation_strategy": translate("CAM_MachineEditor", "Rotation Strategy"),
         "notes": translate("CAM_MachineEditor", "Kinematics Notes"),
         # Axis field labels
         "role": translate("CAM_MachineEditor", "Role"),
@@ -326,20 +327,6 @@ class DataclassGUIGenerator:
             widgets[field.name] = widget
 
         return group, widgets
-
-
-class _TemplateComboBox(QtGui.QComboBox):
-    """QComboBox that keeps the popup open when a folder item is clicked."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._skip_next_hide = False
-
-    def hidePopup(self):
-        if self._skip_next_hide:
-            self._skip_next_hide = False
-            return
-        super().hidePopup()
 
 
 class MachineEditorDialog(QtGui.QDialog):
@@ -716,8 +703,8 @@ class MachineEditorDialog(QtGui.QDialog):
         if self.machine:
             if field_name == "tcp_supported":
                 self.machine.kinematics.tcp_supported = value
-            elif field_name == "dwo_supported":
-                self.machine.kinematics.dwo_supported = value
+            elif field_name == "rotation_strategy":
+                self.machine.kinematics.rotation_strategy = value
             elif field_name == "notes":
                 self.machine.kinematics.notes = value
 
@@ -850,18 +837,22 @@ class MachineEditorDialog(QtGui.QDialog):
     def _on_template_tree_clicked(self, model_index):
         """Handle a click in the template tree popup.
 
-        Folder items (non-selectable) are toggled expand/collapse; the popup
-        stays open via _TemplateComboBox._skip_next_hide.
+        Folder items (non-selectable) are toggled expand/collapse;
         Leaf items (selectable) load the template and close the popup.
         """
         if not (model_index.flags() & QtCore.Qt.ItemIsSelectable):
             # Folder node: toggle expansion, keep popup open
-            self.template_combo._skip_next_hide = True
             if self._template_tree_view.isExpanded(model_index):
                 self._template_tree_view.collapse(model_index)
             else:
                 self._template_tree_view.expand(model_index)
-            return
+
+    def _on_template_activated(self, _row):
+        model_index = self._template_tree_view.currentIndex()
+        if model_index.flags() & QtCore.Qt.ItemIsSelectable:
+            self._load_template(model_index)
+
+    def _load_template(self, model_index):
 
         template_path = model_index.data(QtCore.Qt.UserRole)
         display_text = model_index.data(QtCore.Qt.DisplayRole) or ""
@@ -936,7 +927,7 @@ class MachineEditorDialog(QtGui.QDialog):
             self._template_tree_view = QtGui.QTreeView()
             self._template_tree_view.setHeaderHidden(True)
 
-            self.template_combo = _TemplateComboBox()
+            self.template_combo = QtGui.QComboBox()
             self.template_combo.setEditable(True)
             self.template_combo.lineEdit().setReadOnly(True)
             self.template_combo.setView(self._template_tree_view)
@@ -952,14 +943,11 @@ class MachineEditorDialog(QtGui.QDialog):
             self.template_model.appendRow(custom_item)
 
             # User's saved machines — document icon
-            user_machines = MachineFactory.list_configuration_files()
-            if len(user_machines) > 1:
-                for name, filename in user_machines:
-                    if filename:
-                        user_path = MachineFactory.get_config_directory() / filename
-                        item = QtGui.QStandardItem(doc_icon, name)
-                        item.setData(str(user_path), QtCore.Qt.UserRole)
-                        self.template_model.appendRow(item)
+            for name, filename in MachineFactory.list_configuration_files():
+                user_path = MachineFactory.get_config_directory() / filename
+                item = QtGui.QStandardItem(doc_icon, name)
+                item.setData(str(user_path), QtCore.Qt.UserRole)
+                self.template_model.appendRow(item)
 
             # Built-in templates — document icon
             for name, filepath in MachineFactory.list_builtin_templates():
@@ -980,6 +968,7 @@ class MachineEditorDialog(QtGui.QDialog):
             self.template_combo.setEditText(translate("CAM_MachineEditor", "Custom"))
 
             self._template_tree_view.clicked.connect(self._on_template_tree_clicked)
+            self.template_combo.activated.connect(self._on_template_activated)
             self.template_combo.setToolTip(
                 translate("CAM_MachineEditor", "Load settings from an existing machine template")
             )
@@ -1018,12 +1007,35 @@ class MachineEditorDialog(QtGui.QDialog):
             translate("CAM_MachineEditor", "TCP Supported"), self.tcp_supported_check
         )
 
-        self.dwo_supported_check = QtGui.QCheckBox()
-        self.dwo_supported_check.toggled.connect(
-            lambda v: self._on_kinematics_field_changed("dwo_supported", v)
+        # How the control handles an operation on a tilted work plane
+        self.rotation_strategy_combo = QtGui.QComboBox()
+        for member, label in (
+            (RotationStrategy.NONE, translate("CAM_MachineEditor", "Not declared")),
+            (RotationStrategy.DWO, translate("CAM_MachineEditor", "Dynamic work offset (DWO)")),
+            (RotationStrategy.TWP, translate("CAM_MachineEditor", "Tilted work plane (TWP)")),
+            (
+                RotationStrategy.POST_TRANSFORM,
+                translate("CAM_MachineEditor", "Post transform (not available yet)"),
+            ),
+        ):
+            self.rotation_strategy_combo.addItem(label, member)
+        self.rotation_strategy_combo.setToolTip(
+            translate(
+                "CAM_MachineEditor",
+                "How the control runs an operation on a tilted work plane. DWO: the post "
+                "commands the rotary axes and the control applies its pivot offsets. TWP: "
+                "the post declares the plane and the control positions the rotary axes. "
+                "A machine with rotary axes and no strategy cannot post such an operation. "
+                "The command the plane is declared with comes from the post-processor.",
+            )
+        )
+        self.rotation_strategy_combo.currentIndexChanged.connect(
+            lambda i: self._on_kinematics_field_changed(
+                "rotation_strategy", self.rotation_strategy_combo.itemData(i)
+            )
         )
         kinematics_layout.addRow(
-            translate("CAM_MachineEditor", "DWO Supported"), self.dwo_supported_check
+            translate("CAM_MachineEditor", "Rotation Strategy"), self.rotation_strategy_combo
         )
 
         # Notes
@@ -2166,9 +2178,11 @@ class MachineEditorDialog(QtGui.QDialog):
         if not self.machine:
             return
 
-        # TCP/DWO support
-        self.tcp_supported_check.setChecked(self.machine.kinematics.tcp_supported)
-        self.dwo_supported_check.setChecked(self.machine.kinematics.dwo_supported)
+        kinematics = self.machine.kinematics
+        self.tcp_supported_check.setChecked(kinematics.tcp_supported)
+        self.rotation_strategy_combo.setCurrentIndex(
+            max(0, self.rotation_strategy_combo.findData(kinematics.rotation_strategy))
+        )
 
         # Notes
         self.kinematics_notes_edit.setText(self.machine.kinematics.notes)

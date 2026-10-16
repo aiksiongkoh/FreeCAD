@@ -157,6 +157,7 @@ class CAMWorkbench(Workbench):
             "CAM_DressupArray",
             "CAM_DressupAxisMap",
             "CAM_DressupPathBoundary",
+            "CAM_DressupPathBoundary2",
             "CAM_DressupDogbone",
             "CAM_DressupDragKnife",
             "CAM_DressupLeadInOut",
@@ -247,16 +248,12 @@ class CAMWorkbench(Workbench):
                     import opencamlib as ocl
                 from Path.Op.Gui import Surface
                 from Path.Op.Gui import Waterline
+                from Path.Op.Gui import PlanarSurface  # noqa: F401
+                from Path.Op.Gui import RotarySurface  # noqa: F401
 
-                threedopcmdlist.extend(["CAM_Surface", "CAM_Waterline"])
-
-                if Path.Preferences.experimentalFeaturesEnabled():
-                    # Planar Surface and Rotary Surface are companion operations
-                    # and ship together behind the experimental-features flag.
-                    from Path.Op.Gui import PlanarSurface  # noqa: F401
-                    from Path.Op.Gui import RotarySurface  # noqa: F401
-
-                    threedopcmdlist.extend(["CAM_PlanarSurface", "CAM_RotarySurface"])
+                threedopcmdlist.extend(
+                    ["CAM_Surface", "CAM_Waterline", "CAM_PlanarSurface", "CAM_RotarySurface"]
+                )
                 threedcmdgroup = ["CAM_3dTools"]
                 FreeCADGui.addCommand(
                     "CAM_3dTools",

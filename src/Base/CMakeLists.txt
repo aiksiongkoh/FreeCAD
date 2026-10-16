@@ -20,6 +20,8 @@ else()
     target_compile_definitions(FreeCADBase PRIVATE FC_HAS_FLOATING_POINT_FROM_CHARS=0)
 endif()
 
+target_compile_definitions(FreeCADBase PRIVATE FC_BUILD_TYPE="$<CONFIG>")
+
 if(WIN32)
     add_definitions(-DFCBase)
     add_definitions(-DPYCXX_DLL)
@@ -289,6 +291,7 @@ SET(FreeCADBase_CPP_SRCS
     Uuid.cpp
     Vector3D.cpp
     VectorPyImp.cpp
+    Version.cpp
     ViewProj.cpp
     Writer.cpp
     XMLTools.cpp
@@ -362,6 +365,7 @@ SET(FreeCADBase_HPP_SRCS
     UniqueNameManager.h
     Uuid.h
     Vector3D.h
+    Version.h
     ViewProj.h
     Writer.h
     XMLTools.h

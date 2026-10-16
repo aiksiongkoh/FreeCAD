@@ -207,6 +207,15 @@ class ViewProvider:
         if 0 == mode:
             if vobj is None:
                 vobj = self.vobj
+            proxy = getattr(vobj.Object, "Proxy", None)
+            if isinstance(proxy, PathOp.RemovedOp):
+                # The op's page module went with its implementation: show the notice instead.
+                QtGui.QMessageBox.warning(
+                    FreeCADGui.getMainWindow(),
+                    translate("PathOp", "Operation Deleted"),
+                    proxy.opDeprecationNotice(vobj.Object),
+                )
+                return False
             # Mark as selected and update workplane visualization
             self._selected = True
             self.updateWorkplaneVisualization()
@@ -369,6 +378,31 @@ class ViewProvider:
             % operation.Label
             + "\n"
         )
+
+
+def makeDeprecationBanner(parent=None):
+    """makeDeprecationBanner(parent=None) ... a hidden QLabel styled as a deprecation banner.
+    Fill it with setDeprecationBanner(label, notice)."""
+    label = QtGui.QLabel(parent)
+    label.setObjectName("deprecationWarning")
+    label.setStyleSheet(
+        "QLabel { background-color: #ffcc00; color: #000000; padding: 8px; "
+        "border: 2px solid #ff9900; border-radius: 4px; font-weight: bold; }"
+    )
+    label.setWordWrap(True)
+    label.setAlignment(QtCore.Qt.AlignCenter)
+    label.hide()
+    return label
+
+
+def setDeprecationBanner(label, notice):
+    """setDeprecationBanner(label, notice) ... show the banner with notice, or hide it if
+    notice is None."""
+    if notice:
+        label.setText(translate("PathOp", "\u26a0 Deprecated: {}").format(notice))
+        label.show()
+    else:
+        label.hide()
 
 
 class TaskPanelPage:
@@ -1363,7 +1397,10 @@ class TaskPanelHeightsPage(TaskPanelPage):
         operation's tool axis. See PathUtil.depthOfFeature()."""
         if len(sel) != 1 or len(sel[0].SubObjects) != 1:
             return None
-        return PathUtil.depthOfFeature(sel[0].SubObjects[0], PathUtil.toolAxisForOp(obj))
+        frame = PathUtil.workplaneForOp(obj)
+        return PathUtil.depthOfFeature(
+            sel[0].SubObjects[0], frame.Rotation.multVec(FreeCAD.Vector(0, 0, 1)), frame.Base
+        )
 
     def updateSelection(self, obj, sel):
         enabled = self.selectionZLevel(obj, sel) is not None
@@ -1469,6 +1506,11 @@ class TaskPanel:
         self.deleteOnReject = deleteOnReject
         self.featurePages = []
         self.parent = None
+        # Side, when offered from the selection, is judged in the work plane
+        # the new operation inherited. See _reofferSide().
+        self._sideOffered = False
+        self._sideSetByUser = False
+        self._reofferingSide = False
 
         # members initialized later
         self.clearanceHeight = None
@@ -1547,25 +1589,54 @@ class TaskPanel:
             tabwidget.setWindowTitle(opTitle)
             if opPage.getIcon(obj):
                 tabwidget.setWindowIcon(QtGui.QIcon(opPage.getIcon(obj)))
-            self.form = tabwidget
+            self.form = self._withDeprecationBanner(tabwidget)
         elif taskPanelLayout == 2:
             forms = []
             for page in self.featurePages:
                 page.form.setWindowTitle(page.getTitle(obj))
                 forms.append(page.form)
+            # The banner sits in the first box: a box of its own stays visible when empty.
+            forms[0] = self._withDeprecationBanner(forms[0])
             self.form = forms
         elif taskPanelLayout == 3:
             forms = []
             for page in reversed(self.featurePages):
                 page.form.setWindowTitle(page.getTitle(obj))
                 forms.append(page.form)
+            forms[0] = self._withDeprecationBanner(forms[0])
             self.form = forms
+        self.updateDeprecationBanner()
 
         self.selectionFactory = selectionFactory
         self.obj = obj
         self.isdirty = deleteOnReject
         self.visibility = obj.ViewObject.Visibility
         obj.ViewObject.Visibility = True
+
+    def _withDeprecationBanner(self, widget):
+        """_withDeprecationBanner(widget) ... wrap widget so the deprecation banner sits above it.
+        The wrapper carries the window title and icon the task panel reads."""
+        self.deprecationBanner = makeDeprecationBanner()
+        wrapper = QtGui.QWidget()
+        wrapper.setWindowTitle(widget.windowTitle())
+        wrapper.setWindowIcon(widget.windowIcon())
+        layout = QtGui.QVBoxLayout(wrapper)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.deprecationBanner)
+        layout.addWidget(widget)
+        return wrapper
+
+    def updateDeprecationBanner(self):
+        """updateDeprecationBanner() ... show or hide the banner from the op's
+        opDeprecationNotice(obj), which may depend on the current property values."""
+        proxy = getattr(self.obj, "Proxy", None)
+        notice = None
+        if hasattr(proxy, "opDeprecationNotice"):
+            try:
+                notice = proxy.opDeprecationNotice(self.obj)
+            except Exception as e:
+                Path.Log.debug(f"opDeprecationNotice failed: {e}")
+        setDeprecationBanner(self.deprecationBanner, notice)
 
     def isDirty(self):
         """isDirty() ... returns true if the model is not in sync with the UI anymore."""
@@ -1679,6 +1750,8 @@ class TaskPanel:
                     page.addBaseGeometry(sel)
             if hasattr(self.obj.Proxy, "initAfterBase"):
                 self.obj.Proxy.initAfterBase(self.obj)
+                self._sideOffered = hasattr(self.obj, "Side")
+                self._sideSetByUser = False
 
         # Update properties based upon expressions in case expression value has changed
         for prp, expr in self.obj.ExpressionEngine:
@@ -1703,9 +1776,32 @@ class TaskPanel:
         # Path.Log.track(obj.Label, prop) # creates a lot of noise
         for page in self.featurePages:
             page.pageUpdateData(obj, prop)
+        self.updateDeprecationBanner()
+        if prop == "Side" and not self._reofferingSide:
+            self._sideSetByUser = True
+        elif prop == "Workplane" and self._sideOffered and not self._sideSetByUser:
+            self._reofferSide()
+
+    def _reofferSide(self):
+        """_reofferSide() ... offer Side again for the work plane just chosen.
+
+        A new operation's Side is offered from its selection when the panel
+        opens, judged in the work plane the operation inherited from the one
+        before it. Another plane turns that judgement around: a slot's walls
+        are inside in the plane that faces them and outside in one that does
+        not. So the side is offered again when the plane changes, until the
+        user sets it by hand."""
+        self._reofferingSide = True
+        try:
+            self.obj.Proxy.initAfterBase(self.obj)
+            self.panelSetFields()
+        finally:
+            self._reofferingSide = False
 
     def needsFullSpace(self):
-        return self.taskPanelLayout >= 2
+        return self.taskPanelLayout >= 2 or any(
+            getattr(page, "needsFullSpace", False) for page in self.featurePages
+        )
 
     def updateSelection(self):
         sel = FreeCADGui.Selection.getSelectionEx()
@@ -1732,8 +1828,8 @@ class CommandSetStartPoint:
     def GetResources(self):
         return {
             "Pixmap": "CAM_StartPoint",
-            "MenuText": QT_TRANSLATE_NOOP("PathOp", "Start Point Selection"),
-            "ToolTip": QT_TRANSLATE_NOOP("PathOp", "Selects the start point"),
+            "MenuText": QT_TRANSLATE_NOOP("CAM_SetStartPoint", "Start Point Selection"),
+            "ToolTip": QT_TRANSLATE_NOOP("CAM_SetStartPoint", "Selects the start point"),
         }
 
     def IsActive(self):
