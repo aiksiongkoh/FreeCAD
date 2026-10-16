@@ -3,6 +3,8 @@
 param(
     [ValidateSet('Configure', 'Build', 'Scripts')]
     [string]$Action = 'Build',
+    [ValidateSet('Debug', 'Release')]
+    [string]$Configuration = 'Debug',
     [string]$LibPack = $env:FREECAD_LIBPACK_DIR,
     [ValidateRange(1, 128)]
     [int]$Jobs = 4
@@ -10,16 +12,33 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $sourceDir = Split-Path -Parent $PSScriptRoot
-$buildDir = Join-Path $sourceDir 'build/debug'
+$buildDir = Join-Path $sourceDir "build/$($Configuration.ToLowerInvariant())"
 $cacheFile = Join-Path $buildDir 'CMakeCache.txt'
+$configurePreset = if ($Configuration -eq 'Release') { 'windows-release' } else { 'windows-debug' }
+
+# Windows cannot replace DLLs loaded by a running executable from this build.
+# Script-only refreshes are safe while FreeCAD is running.
+if ($Action -eq 'Build') {
+    $buildBin = [System.IO.Path]::GetFullPath((Join-Path $buildDir 'bin'))
+    $processNames = if ($Configuration -eq 'Release') { @('FreeCAD', 'FreeCADCmd') } else { @('FreeCAD_d', 'FreeCADCmd_d') }
+    $running = @(Get-Process -Name $processNames -ErrorAction SilentlyContinue |
+        Where-Object { -not $_.HasExited -and $_.Path -and (Split-Path -Parent $_.Path) -eq $buildBin })
+    if ($running.Count -gt 0) {
+        $processList = ($running | ForEach-Object { "$($_.ProcessName) (PID $($_.Id))" }) -join ', '
+        throw "Close FreeCAD from this $Configuration build and stop its debug session before rebuilding. Running: $processList. Loaded DLLs cannot be overwritten."
+    }
+}
 
 # Reuse the dependency path saved by the first configure, not another build tree.
+if ($Configuration -eq 'Release' -and -not $PSBoundParameters.ContainsKey('LibPack') -and (Test-Path -LiteralPath $cacheFile)) {
+    $LibPack = $null
+}
 if (-not $LibPack -and (Test-Path -LiteralPath $cacheFile)) {
     $entry = Select-String -LiteralPath $cacheFile -Pattern '^FREECAD_LIBPACK_DIR:PATH=(.+)$'
     if ($entry) { $LibPack = $entry.Matches[0].Groups[1].Value }
 }
 if (-not $LibPack -or -not (Test-Path -LiteralPath (Join-Path $LibPack 'bin'))) {
-    throw 'Supply -LibPack <extracted Debug LibPack directory> or set FREECAD_LIBPACK_DIR. See docs/Setup.md.'
+    throw "Supply -LibPack <extracted $Configuration LibPack directory> or set FREECAD_LIBPACK_DIR. See docs/Setup.md."
 }
 $env:FREECAD_LIBPACK_DIR = (Resolve-Path -LiteralPath $LibPack).Path
 
@@ -46,7 +65,7 @@ if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
 Push-Location $sourceDir
 try {
     if ($Action -eq 'Configure' -or -not (Test-Path -LiteralPath $cacheFile)) {
-        & cmake --preset windows-debug "-DFREECAD_LIBPACK_DIR=$env:FREECAD_LIBPACK_DIR"
+        & cmake --preset $configurePreset "-DFREECAD_LIBPACK_DIR=$env:FREECAD_LIBPACK_DIR"
         if ($LASTEXITCODE -ne 0) { throw "CMake configure failed ($LASTEXITCODE)." }
     }
     if ($Action -ne 'Configure') {

@@ -803,7 +803,8 @@ def _display_pipeline(fem_part):
     return pipeline
 
 
-def _ensure_visual_pipeline(fem_part, result, preferred_field=None, value_range=None):
+def _ensure_visual_pipeline(fem_part, result, preferred_field=None, value_range=None,
+                            schedule_refresh=True):
     if result is None:
         return None
 
@@ -858,11 +859,13 @@ def _ensure_visual_pipeline(fem_part, result, preferred_field=None, value_range=
 
     _select_pipeline_field(pipeline, preferred_field)
     _refresh_pipeline_fixed_color_range(fem_part, pipeline, value_range=value_range)
-    _schedule_pipeline_fixed_color_range_refresh(fem_part, pipeline, value_range=value_range)
+    if schedule_refresh:
+        _schedule_pipeline_fixed_color_range_refresh(fem_part, pipeline, value_range=value_range)
     return pipeline
 
 
-def update_result_display(fem_part, current_result, pipeline, value_range=None):
+def update_result_display(fem_part, current_result, pipeline, value_range=None,
+                          schedule_refresh=True):
     """Update one body's result visibility and colors without advancing MbD motion."""
     for result in _linked_results(fem_part):
         visible = result is current_result and _results_display_settings(fem_part)[0]
@@ -895,11 +898,12 @@ def update_result_display(fem_part, current_result, pipeline, value_range=None):
             pipeline,
             value_range=value_range,
         )
-        _schedule_pipeline_fixed_color_range_refresh(
-            fem_part,
-            pipeline,
-            value_range=value_range,
-        )
+        if schedule_refresh:
+            _schedule_pipeline_fixed_color_range_refresh(
+                fem_part,
+                pipeline,
+                value_range=value_range,
+            )
         _apply_result_mesh_color_range(fem_part, current_result, value_range=value_range)
     else:
         _apply_result_mesh_color_range(fem_part, current_result)

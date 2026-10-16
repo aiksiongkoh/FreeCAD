@@ -17,6 +17,7 @@ set(MbDFEM_Scripts
     FreeCADMbDFEMResultsPanel.py
     FreeCADMbDFEMSimulation.py
     FreeCADMbDFEMStateOverlay.py
+    FreeCADMbDFEMVideo.py
     FreeCADMbDFreeBodyDiagram.py
     FreeCADMbDGroundFaces.py
     FreeCADMbDMassMarkerPanel.py
@@ -27,6 +28,8 @@ set(MbDFEM_Scripts
     TestAnnuAnnuFacePair.py
     TestMbDFEMApp.py
     TestMbDFEMStateOverlay.py
+    TestMbDFEMVideo.py
+    VideoSequence.md
 )
 
 set(MbDFEM_Examples

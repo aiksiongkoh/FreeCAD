@@ -174,10 +174,18 @@ class AnimationController:
         return self.current_frame
 
     def stepForward(self):
-        return self.setFrame(self.current_frame + 1)
+        return self._step_frame(1)
 
     def stepBackward(self):
-        return self.setFrame(self.current_frame - 1)
+        return self._step_frame(-1)
+
+    def _step_frame(self, direction):
+        # Manual stepping always wraps over all states, including Input (frame 0).
+        frame = self.current_frame + direction
+        count = self.source_frame_count
+        if count:
+            frame %= count
+        return self.setFrame(frame)
 
     def play(self):
         """Start timer-driven playback when Qt is available."""

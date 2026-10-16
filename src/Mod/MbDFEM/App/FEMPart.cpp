@@ -442,6 +442,10 @@ App::DocumentObjectGroup* MbDFEM::FEMPart::getResultsFolder() const
 
 App::DocumentObjectGroup* MbDFEM::FEMPart::ensureResultsFolder()
 {
+    // Link cleanup during deletion must not recreate the folder we just removed.
+    if (isRemoving()) {
+        return nullptr;
+    }
     if (auto* folder = getResultsFolder()) {
         return folder;
     }

@@ -63,12 +63,11 @@ def update_active_diagrams(controller, sample):
 
     prepare_diagram_scale(controller.assembly)
     for key, diagram in list(_diagrams.items()):
-        if diagram.assembly is controller.assembly:
-            if not diagram.is_valid():
-                _diagrams.pop(key, None)
-                diagram.remove()
-            else:
-                diagram.update(sample)
+        if not diagram.is_valid():
+            _diagrams.pop(key, None)
+            diagram.remove()
+        elif diagram.assembly is controller.assembly:
+            diagram.update(sample)
 
 
 def refresh_assembly_diagrams(document_name, assembly_name, force_scale_prepare=False):
@@ -82,13 +81,12 @@ def refresh_assembly_diagrams(document_name, assembly_name, force_scale_prepare=
     if force_scale_prepare:
         prepare_diagram_scale(assembly, force=True)
     for key, diagram in list(_diagrams.items()):
-        if diagram.assembly is assembly:
-            if not diagram.is_valid():
-                _diagrams.pop(key, None)
-                diagram.remove()
-            else:
-                frame = diagram.current_frame
-                diagram.update((frame, frame, 0.0, frame))
+        if not diagram.is_valid():
+            _diagrams.pop(key, None)
+            diagram.remove()
+        elif diagram.assembly is assembly:
+            frame = diagram.current_frame
+            diagram.update((frame, frame, 0.0, frame))
 
 
 def prepare_diagram_scale(assembly, force=False):
@@ -403,7 +401,7 @@ class FEMPartCLOADDiagram:
         self._scene_graph.addChild(self.root)
 
     def is_valid(self):
-        return self.fem_part.Document is not None and self.assembly.Document is not None
+        return _document_object_is_valid(self.fem_part) and _document_object_is_valid(self.assembly)
 
     def remove(self):
         try:
@@ -762,14 +760,18 @@ def _update_active_face_views(controller, sample):
 
 
 def _face_view_state_is_valid(state):
-    fem_part = state.get("fem_part")
-    display_object = state.get("display_object")
-    return (
-        fem_part is not None
-        and display_object is not None
-        and getattr(fem_part, "Document", None) is not None
-        and getattr(display_object, "Document", None) is not None
+    return all(
+        _document_object_is_valid(state.get(key))
+        for key in ("fem_part", "display_object", "mesh_object")
     )
+
+
+def _document_object_is_valid(obj):
+    # Deleted FreeCAD objects raise when accessing Document, even via getattr.
+    try:
+        return obj is not None and obj.Document is not None
+    except Exception:
+        return False
 
 
 def _cload_faces_display_placement(fem_part):

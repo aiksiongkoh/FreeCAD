@@ -5081,6 +5081,61 @@ class MbDFEMAssemblyTest(unittest.TestCase):
         finally:
             App.closeDocument(document.Name)
 
+    def test_deleting_fem_assembly_removes_owned_folders_and_settings(self):
+        document = App.newDocument("FEMAssemblyDeletionTest")
+        try:
+            document.UndoMode = 1
+            source = document.addObject("MbDFEM::MbDAssembly", "Source")
+            assembly = document.addObject("MbDFEM::FEMAssembly", "FEMAssembly")
+            assembly.mbdItem = source
+            part = document.addObject("MbDFEM::FEMPart", "FEMPart")
+            assembly.parts = [part]
+            assembly.addObject(part)
+            owned_names = [assembly.femParameters.Name, assembly.animationParameters.Name]
+            for category in ("Parts", "Joints", "Motions", "Actions"):
+                folder = document.addObject(
+                    f"MbDFEM::FEM{category}Folder", f"FEMAssembly_{category}")
+                setattr(assembly, f"_{category.lower()}Folder", folder)
+                assembly.addObject(folder)
+                owned_names.append(folder.Name)
+            assembly._partsFolder.addObject(part)
+            import FreeCADMbDFEMVideo as Video
+            sequence = Video.save_sequence(assembly, Video.load_sequence(assembly))
+            owned_names.append(sequence.Name)
+            document.openTransaction("Delete FEM assembly")
+            document.removeObject(assembly.Name)
+            document.commitTransaction()
+            for name in owned_names:
+                self.assertIsNone(document.getObject(name), name)
+            self.assertIsNotNone(document.getObject(source.Name))
+            self.assertIsNotNone(document.getObject(part.Name))
+            document.undo()
+            for name in owned_names:
+                self.assertIsNotNone(document.getObject(name), name)
+            document.redo()
+            for name in owned_names:
+                self.assertIsNone(document.getObject(name), name)
+        finally:
+            App.closeDocument(document.Name)
+
+    def test_deleting_fem_part_does_not_leave_results_folder(self):
+        for with_results in (False, True):
+            with self.subTest(with_results=with_results):
+                document = App.newDocument("FEMPartDeletionTest")
+                try:
+                    source = document.addObject("MbDFEM::MbDPart", "Source")
+                    part = document.addObject("MbDFEM::FEMPart", "FEMPart")
+                    part.mbdItem = source
+                    if with_results:
+                        result = document.addObject("Fem::FemResultObject", "Result")
+                        part.results = [result]
+                    document.removeObject(part.Name)
+                    self.assertFalse(any(o.TypeId == "MbDFEM::FEMResultsFolder"
+                                         for o in document.Objects))
+                    self.assertIsNotNone(document.getObject(source.Name))
+                finally:
+                    App.closeDocument(document.Name)
+
     def test_deleting_part_deletes_owned_markers(self):
         document = App.newDocument("MbDFEMDeletePartTest")
 
@@ -7135,6 +7190,62 @@ class MbDFEMAssemblyTest(unittest.TestCase):
             FreeCADMbDFEMCLOADs._face_view_states.clear()
             App.closeDocument(document.Name)
 
+    def test_fem_part_cload_diagram_discards_deleted_part(self):
+        document = App.newDocument("MbDFEMCLOADDeletedPartTest")
+        original_prepare = FreeCADMbDFEMCLOADs.prepare_diagram_scale
+        key = (document.Name, "DeletedPart")
+        removed = []
+        try:
+            assembly = document.addObject("MbDFEM::MbDAssembly", "Assembly")
+            fem_part = document.addObject("MbDFEM::FEMPart", "FEMPart")
+            # Avoid creating a Coin overlay in an App-only test.
+            diagram = FreeCADMbDFEMCLOADs.FEMPartCLOADDiagram.__new__(
+                FreeCADMbDFEMCLOADs.FEMPartCLOADDiagram
+            )
+            diagram.fem_part = fem_part
+            diagram.assembly = assembly
+            diagram.remove = lambda: removed.append(True)
+            FreeCADMbDFEMCLOADs._diagrams[key] = diagram
+            FreeCADMbDFEMCLOADs.prepare_diagram_scale = lambda assembly: 1.0
+            document.removeObject(fem_part.Name)
+
+            from types import SimpleNamespace
+
+            controller = SimpleNamespace(assembly=assembly)
+            for frame in (0, 1):
+                FreeCADMbDFEMCLOADs.update_active_diagrams(controller, (frame, frame, 0.0, frame))
+            self.assertNotIn(key, FreeCADMbDFEMCLOADs._diagrams)
+            self.assertEqual(removed, [True])
+        finally:
+            FreeCADMbDFEMCLOADs._diagrams.pop(key, None)
+            FreeCADMbDFEMCLOADs.prepare_diagram_scale = original_prepare
+            App.closeDocument(document.Name)
+
+    def test_fem_part_cload_faces_discard_deleted_objects(self):
+        from types import SimpleNamespace
+
+        document = App.newDocument("MbDFEMCLOADDeletedFaceObjectsTest")
+        key = (document.Name, "DeletedFaceState")
+        try:
+            assembly = document.addObject("MbDFEM::MbDAssembly", "Assembly")
+            for deleted_key in ("fem_part", "display_object", "mesh_object"):
+                with self.subTest(deleted_key=deleted_key):
+                    state = {
+                        name: document.addObject("App::FeaturePython", name)
+                        for name in ("fem_part", "display_object", "mesh_object")
+                    }
+                    FreeCADMbDFEMCLOADs._face_view_states[key] = state
+                    document.removeObject(state[deleted_key].Name)
+                    controller = SimpleNamespace(assembly=assembly)
+                    for frame in (0, 1):
+                        FreeCADMbDFEMCLOADs._update_active_face_views(
+                            controller, (frame, frame, 0.0, frame)
+                        )
+                    self.assertNotIn(key, FreeCADMbDFEMCLOADs._face_view_states)
+        finally:
+            FreeCADMbDFEMCLOADs._face_view_states.pop(key, None)
+            App.closeDocument(document.Name)
+
     def test_fem_part_cload_faces_display_object_groups_under_fem_part(self):
         document = App.newDocument("MbDFEMFEMPartCLOADFacesGroupTest")
 
@@ -7238,6 +7349,39 @@ class MbDFEMAssemblyTest(unittest.TestCase):
             controller.setFrame(3)
             self.assertEqual(controller.current_frame, 3)
             self.assertAlmostEqual(part.Placement.Base.x, 3000.0)
+        finally:
+            App.closeDocument(document.Name)
+
+    def test_freecadmbd_animation_steps_loop_over_all_result_states(self):
+        document = App.newDocument("MbDFEMAnimationStepLoopTest")
+        try:
+            assembly = document.addObject("MbDFEM::MbDAssembly", "Assembly")
+            assembly.times = [-sys.float_info.max, 0.0, 0.5, 1.0]
+            parameters = assembly.ensureAnimationParameters()
+            parameters.startFrame = 1
+            parameters.endFrame = 2
+            parameters.loop = True
+            controller = FreeCADMbDAnimation.AnimationController(assembly)
+
+            self.assertEqual(controller.stepBackward(), 3)
+            self.assertEqual(parameters.currentFrame, 3)
+            self.assertEqual(controller.current_time, 1.0)
+            self.assertEqual(controller.stepForward(), 0)
+            self.assertEqual(controller.current_time, -sys.float_info.max)
+            self.assertEqual(controller.stepForward(), 1)
+            self.assertEqual(controller.stepBackward(), 0)
+
+            parameters.loop = False
+            self.assertEqual(controller.stepBackward(), 3)
+            self.assertEqual(controller.stepForward(), 0)
+
+            for times in ([0.0], []):
+                assembly.times = times
+                controller = FreeCADMbDAnimation.AnimationController(assembly)
+                for loop in (True, False):
+                    parameters.loop = loop
+                    self.assertEqual(controller.stepForward(), 0)
+                    self.assertEqual(controller.stepBackward(), 0)
         finally:
             App.closeDocument(document.Name)
 

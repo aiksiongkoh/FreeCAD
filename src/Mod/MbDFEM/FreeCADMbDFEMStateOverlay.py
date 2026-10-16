@@ -38,7 +38,7 @@ def state_text(assembly, sample=None):
     else:
         time_label = f"{seconds:.3f}"
     suffix = " (Input)" if is_input else ""
-    return f"State {frame} / {count} · t = {time_label} s{suffix}"
+    return f"State {frame} / {count - 1} · t = {time_label} s{suffix}"
 
 
 def contrasting_text_color(rgb):

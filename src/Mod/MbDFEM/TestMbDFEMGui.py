@@ -2334,6 +2334,33 @@ class MbDFEMGuiViewProviderTest(unittest.TestCase):
         finally:
             panel.reject()
 
+    def test_animation_task_panel_input_time_and_state_indices(self):
+        import FreeCADMbDAnimationPanel
+        import FreeCADMbDFEMStateOverlay as Overlay
+
+        assembly = self.document.addObject("MbDFEM::MbDAssembly", "Assembly")
+        part = self.document.addObject("MbDFEM::MbDPart", "Part")
+        assembly.addPart(part)
+        assembly.times = [-sys.float_info.max, 0.0, 1.0]
+        for name in ("xs", "ys", "zs"):
+            setattr(part, name, [0.0] * 3)
+        parameters = assembly.ensureAnimationParameters()
+        panel = FreeCADMbDAnimationPanel.AnimationTaskPanel(parameters)
+        try:
+            self.assertEqual(panel.time_label.text(), "Input")
+            self.assertEqual(panel.frame_count_label.text(), "/ 2")
+            self.assertTrue(Overlay.state_text(assembly).startswith("State 0 / 2 "))
+            panel.first_button.click()
+            self.assertEqual(panel.time_label.text(), "0 / 1 s")
+            panel.last_button.click()
+            self.assertEqual(panel.time_label.text(), "1 / 1 s")
+            self.assertTrue(Overlay.state_text(assembly).startswith("State 2 / 2 "))
+            panel.input_button.click()
+            self.assertEqual(panel.time_label.text(), "Input")
+            self.assertEqual(assembly.times[0], -sys.float_info.max)
+        finally:
+            panel.reject()
+
     def test_animation_task_panel_play_toggle_and_frame_end_buttons(self):
         import FreeCADMbDAnimationPanel
 

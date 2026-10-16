@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cstring>
+#include <string>
 
 #include <App/Document.h>
 #include <App/DocumentObjectGroup.h>
@@ -210,6 +211,34 @@ void MbDFEM::FEMAssembly::onDocumentRestored()
 {
     App::Part::onDocumentRestored();
     ensureParameterObjects();
+}
+
+void MbDFEM::FEMAssembly::unsetupObject()
+{
+    if (auto* document = getDocument()) {
+        // Snapshot names: removing an object clears links and can trigger callbacks.
+        std::vector<std::string> ownedNames;
+        const auto remember = [&ownedNames](App::DocumentObject* object) {
+            if (object && object->isAttachedToDocument() && !object->isRemoving()) {
+                ownedNames.emplace_back(object->getNameInDocument());
+            }
+        };
+        remember(femParameters.getValue());
+        remember(animationParameters.getValue());
+        if (auto* link = dynamic_cast<App::PropertyLink*>(getPropertyByName("videoSequence"))) {
+            remember(link->getValue());
+        }
+        for (auto* folder : getCategoryFolders()) {
+            remember(folder);
+        }
+        for (const auto& name : ownedNames) {
+            auto* object = document->getObject(name.c_str());
+            if (object && !object->isRemoving()) {
+                document->removeObject(name.c_str());
+            }
+        }
+    }
+    App::Part::unsetupObject();
 }
 
 App::DocumentObjectGroup* MbDFEM::FEMAssembly::getPartsFolder() const

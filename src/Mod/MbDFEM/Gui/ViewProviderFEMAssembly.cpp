@@ -12,6 +12,7 @@
 
 #include <App/Document.h>
 #include <App/PropertyGeo.h>
+#include <App/PropertyLinks.h>
 #include <Base/Interpreter.h>
 #include <Mod/MbDFEM/App/FEMAssembly.h>
 
@@ -128,6 +129,11 @@ std::vector<App::DocumentObject*> ViewProviderFEMAssembly::claimChildren() const
     }
     if (auto* parameters = assembly->animationParameters.getValue()) {
         children.push_back(parameters);
+    }
+    if (auto* link = dynamic_cast<App::PropertyLink*>(assembly->getPropertyByName("videoSequence"))) {
+        if (auto* sequence = link->getValue()) {
+            children.push_back(sequence);
+        }
     }
     auto folders = assembly->getCategoryFolders();
     children.insert(children.end(), folders.begin(), folders.end());

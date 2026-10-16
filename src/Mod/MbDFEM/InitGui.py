@@ -17,10 +17,13 @@ import FreeCADMbDAnimationPanel
 import FreeCADMbDFEMAnimation
 import FreeCADMbDFEMSimulation
 import FreeCADMbDFEMStateOverlay
+import FreeCADMbDFEMVideo
 import FreeCADMbDSimulationPanel
 import FreeCADMbDGroundFaces
 
-FreeCAD.__unit_test__ += ["TestMbDFEMGui", "TestMbDFEMStateOverlay"]
+FreeCAD.__unit_test__ += ["TestMbDFEMGui", "TestMbDFEMStateOverlay", "TestMbDFEMVideo"]
+
+Gui.addCommand("MbDFEM_VideoSequence", FreeCADMbDFEMVideo.VideoSequenceCommand())
 
 _embedded_fem_part_view_provider_observer = None
 _true_mesh_view_states = {}
@@ -2754,9 +2757,6 @@ class SolveMbDAssemblyTaskPanel:
             solved_path = Path(self.solved_asmt_file.text())
             imported = FreeCADMbDResults.import_results(self.assembly, solved_path)
             self._set_status(f"Imported ASMT results: {solved_path}")
-            App.Console.PrintMessage(
-                f"Imported FreeCADMbD results from: {solved_path}\n"
-            )
             Gui.Selection.clearSelection()
             Gui.Selection.addSelection(self.assembly)
             self.assembly.Document.recompute()
@@ -2900,6 +2900,7 @@ class MbDFEMWorkbench(Gui.Workbench):
             "MbDFEM_FreeBodyDiagram",
             "MbDFEM_AnimateFEMResults",
             "MbDFEM_SimulateFEMAssembly",
+            "MbDFEM_VideoSequence",
         ]
         self.appendToolbar("MbDFEM", toolbar_commands)
         self.appendMenu("MbDFEM", menu_commands)

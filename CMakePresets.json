@@ -110,6 +110,27 @@
         }
       },
       {
+        "name": "windows-release",
+        "displayName": "Windows Release with MbDFEM",
+        "description": "MSVC/Ninja Release build in build/release; set FREECAD_LIBPACK_DIR or use tools/build-windows-debug.ps1 -Configuration Release",
+        "inherits": "release",
+        "generator": "Ninja",
+        "condition": {
+          "type": "equals",
+          "lhs": "${hostSystemName}",
+          "rhs": "Windows"
+        },
+        "cacheVariables": {
+          "FREECAD_LIBPACK_USE": "ON",
+          "BUILD_MBDFEM": "ON",
+          "FREECAD_RELEASE_PDB": "ON",
+          "FREECAD_COPY_LIBPACK_BIN_TO_BUILD": "ON",
+          "FREECAD_COPY_DEPEND_DIRS_TO_BUILD": "ON",
+          "FREECAD_COPY_PLUGINS_BIN_TO_BUILD": "ON",
+          "CMAKE_EXE_LINKER_FLAGS_RELEASE": "/INCREMENTAL:NO /STACK:12000000"
+        }
+      },
+      {
         "name": "conda",
         "hidden": true,
         "generator": "Ninja",

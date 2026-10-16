@@ -1,5 +1,8 @@
 # MbDFEM development workspace on Windows 11
 
+For saved camera shots, PNG image sequences and MP4 export, see
+[MbDFEM video sequences](VideoSequence.md).
+
 This guide creates a Windows 11 development workspace for the built-in FreeCAD
 `MbDFEM` module. It reproduces the layout used by this checkout:
 

@@ -34,6 +34,25 @@ _diagrams = {}
 _prepared_auto_scales = {}
 
 
+def visible_parts(assembly):
+    """Names of bodies with visible transient free-body diagrams."""
+    return [diagram.part.Name for diagram in _diagrams.values()
+            if diagram.assembly is assembly and diagram.is_valid()]
+
+
+def set_visible_parts(assembly, names):
+    """Set a saved shot's diagram visibility without affecting other assemblies."""
+    names = set(names)
+    parts = {part.Name: part for part in list(assembly.parts) + list(assembly.fixedparts)}
+    missing = names.difference(parts)
+    if missing:
+        raise ValueError("Missing free-body diagram bodies: " + ", ".join(sorted(missing)))
+    for name in set(visible_parts(assembly)).symmetric_difference(names):
+        visible = _toggle_part(parts[name], raise_on_error=True)
+        if name in names and not visible:
+            raise RuntimeError(f"Unable to display free-body diagram for {name}.")
+
+
 def install():
     """Register the MbDFEM free-body diagram GUI command."""
     import FreeCADGui as Gui
@@ -207,7 +226,7 @@ def _diagram_key(part):
     return (part.Document.Name, part.Name)
 
 
-def _toggle_part(part):
+def _toggle_part(part, raise_on_error=False):
     key = _diagram_key(part)
     diagram = _diagrams.pop(key, None)
     if diagram is not None:
@@ -216,6 +235,8 @@ def _toggle_part(part):
 
     assembly = _assembly_containing_part(part)
     if assembly is None:
+        if raise_on_error:
+            raise ValueError("MbDPart is not contained by an MbDAssembly.")
         App.Console.PrintError("MbDPart is not contained by an MbDAssembly.\n")
         return False
 
@@ -226,6 +247,8 @@ def _toggle_part(part):
     except Exception as exc:
         if diagram is not None:
             diagram.remove()
+        if raise_on_error:
+            raise
         App.Console.PrintError(f"FreeBodyDiagram failed: {exc}\n")
         return False
 

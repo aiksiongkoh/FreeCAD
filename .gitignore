@@ -92,5 +92,6 @@ mbdfem_frame.json
 
 # Local pendulum experiments and startup helpers
 /data/examples/RealisticPendulum/RealisticPendulumTemp*.FCStd
+/data/examples/RealisticPendulum/RealisticPendulum2.FCStd
 /data/examples/RealisticPendulum/startup.py
 /data/examples/RealisticPendulum/startup.FCMacro

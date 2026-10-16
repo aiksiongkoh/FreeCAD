@@ -2,6 +2,13 @@
     "version": "2.0.0",
     "tasks": [
         {
+            "label": "MbDFEM: refresh Release scripts caches and C++",
+            "type": "process",
+            "command": "powershell.exe",
+            "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/tools/build-windows-debug.ps1", "-Configuration", "Release", "-Action", "Build"],
+            "problemMatcher": "$msCompile"
+        },
+        {
             "label": "MbDFEM: configure Windows Debug",
             "type": "process",
             "command": "powershell.exe",

@@ -568,6 +568,11 @@ void SoFCColorBar::prepareViewport(const SbVec2s& size, bool force)
         return;
     }
 
+    // Text2 bounds are measured in viewport pixels. A width measured for the
+    // interactive view is not valid for an exported frame of another size.
+    if (windowSize != size) {
+        boxWidth = -1.0F;
+    }
     windowSize = size;
     float minimumX {};
     float minimumY {};
@@ -605,12 +610,18 @@ void SoFCColorBar::setMode(ColorScaleMode mode)
     }
 }
 
-float SoFCColorBar::getBoundingWidth(const SbVec2s& size)
+float SoFCColorBar::getBoundingWidth(
+    const SbVec2s& size, float barWidth, float minimumY, float maximumY)
 {
     const float ratio = static_cast<float>(size[0]) / static_cast<float>(size[1]);
     if (ratio >= 1.0F && boxWidth >= 0.0F) {
         return boxWidth;
     }
+
+    // Text2 bounds are pixel-aligned. Measuring at the preceding viewport's
+    // translated position can change the measured extent by a pixel. Use the
+    // same origin for every measurement, then apply the final layout afterward.
+    presentation->setViewport(colorScale->mode(), 0.0F, minimumY, barWidth, maximumY, 0.0F);
 
     auto camera = new SoOrthographicCamera;
     camera->position = SbVec3f(0.0F, 0.0F, 5.0F);
@@ -654,7 +665,12 @@ float SoFCColorBar::snapExtentToPixelGrid(float extent, const SbVec2s& size) con
     }
 
     const float logicalUnitsPerPixel = 10.0F / static_cast<float>(size[1]);
-    return std::ceil(extent / logicalUnitsPerPixel) * logicalUnitsPerPixel;
+    // Bounding-box transforms can put an integer pixel extent a few float
+    // ulps above its grid line. Do not add a whole pixel for that roundoff.
+    return static_cast<float>(
+        std::ceil(static_cast<double>(extent) / logicalUnitsPerPixel - 1.0e-3)
+        * logicalUnitsPerPixel
+    );
 }
 
 float SoFCColorBar::getBounds(
@@ -681,7 +697,7 @@ float SoFCColorBar::getBounds(
         maximumY = baseY / ratio;
     }
 
-    return getBoundingWidth(size);
+    return getBoundingWidth(size, maximumX - minimumX, minimumY, maximumY);
 }
 
 void SoFCColorBar::customize()

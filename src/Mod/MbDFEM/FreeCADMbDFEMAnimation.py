@@ -90,13 +90,19 @@ class FEMAnimationController:
     def interval_states(self, first, last):
         return [index for index in self.states if first <= index <= last]
 
-    def prepare_display(self, field, shared_scale, first, last):
+    def prepare_display(self, field, shared_scale, first, last, progress=None):
         """Freeze color ranges once for the selected bodies and playback interval."""
         self.field = field
         ranges = {}
+        states = self.interval_states(first, last)
+        total = len(self.parts) * len(states)
+        completed = 0
         for part in self.parts:
             values = []
-            for index in self.interval_states(first, last):
+            for index in states:
+                if progress is not None:
+                    progress(part, index, completed, total)
+                completed += 1
                 if not Results._include_state_in_legend_scale(part, index):
                     continue
                 value_range = Results._state_pipeline_scalar_range(part, field, index)
@@ -111,24 +117,34 @@ class FEMAnimationController:
             combined = (min(value[0] for value in available), max(value[1] for value in available))
             ranges = dict.fromkeys(ranges, combined)
         self._ranges = ranges
+        if progress is not None and self.parts and states:
+            progress(self.parts[-1], states[-1], total, total)
 
-    def show_state(self, index):
+    def show_state(self, index, schedule_refresh=True, progress=None):
         """Advance motion once, then update every selected body's FEM results."""
         if index not in self.states:
             raise ValueError(f"State {index} does not have results for every selected body.")
+        if progress is not None:
+            progress(f"Updating motion for FEM state {index}", 0, 0)
         self.motion.setFrame(index)
         Results._sync_fem_parts_to_mbd_parts(self.assembly, self.motion.targets)
-        for part in self.parts:
+        for position, part in enumerate(self.parts):
+            if progress is not None:
+                progress(f"Loading FEM state {index}\nBody: {part.Label}", position, len(self.parts))
             result = self._results[part.Name][index]
             value_range = self._ranges.get(part.Name)
             pipeline = Results._ensure_visual_pipeline(
-                part, result, self.field, value_range=value_range
+                part, result, self.field, value_range=value_range,
+                schedule_refresh=schedule_refresh
             )
             if pipeline is None:
                 raise RuntimeError(f"Unable to display {part.Label} result {index}.")
             if Results._pipeline_field_name(pipeline) != self.field:
                 raise ValueError(f"{part.Label} result {index} does not contain {self.field}.")
-            Results.update_result_display(part, result, pipeline, value_range)
+            Results.update_result_display(part, result, pipeline, value_range,
+                                          schedule_refresh=schedule_refresh)
+        if progress is not None:
+            progress(f"Recomputing FEM state {index}", 0, 0)
         self.assembly.Document.recompute()
         self.current_frame = index
         return index

@@ -256,7 +256,6 @@ class SimulationTaskPanel:
                 return False
             imported = FreeCADMbDResults.import_results(self.assembly, solved_path)
             self._set_status(f"Imported ASMT results: {solved_path}")
-            App.Console.PrintMessage(f"Imported FreeCADMbD results from: {solved_path}\n")
             Gui.Selection.clearSelection()
             Gui.Selection.addSelection(self.assembly)
             self.assembly.Document.recompute()

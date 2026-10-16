@@ -288,6 +288,19 @@ Use **Run and Debug > Debug MbDFEM** or **Full Debug FreeCAD** and press `F5`.
 Both run an incremental C++ build before launch. **Fast Debug FreeCAD** refreshes
 only scripts and caches; build all targets once before using it.
 
+Before a full build, close FreeCAD and FreeCADCmd instances launched from
+`build/debug/bin` and stop any active debug session. The build task reports their
+process IDs if they are still running: Windows cannot overwrite loaded DLLs,
+which otherwise causes `LNK1168: cannot open bin\FreeCADBase_d.dll for writing`.
+The script-only refresh can still run while FreeCAD is open.
+
+For Release builds, run `tools/build-windows-debug.ps1 -Configuration Release`
+with a Release LibPack. The script uses the shared `windows-release` preset and
+builds in `build/release`. **Full Release Script** builds before launching;
+**Release MbDFEM** launches the existing build. Script launch configurations use
+the optional, ignored `data/examples/RealisticPendulum/startup.FCMacro` helper;
+create it locally before using them.
+
 `stopAtEntry` may be set to `true` while testing debugger startup. If enabled,
 FreeCAD stops at `main()` first. Press Continue to reach later breakpoints.
 

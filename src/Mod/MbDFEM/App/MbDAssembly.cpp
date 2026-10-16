@@ -602,7 +602,7 @@ std::vector<App::DocumentObject*> MbDFEM::MbDAssembly::getCategoryChildren() con
 std::vector<App::DocumentObject*> MbDFEM::MbDAssembly::getParameterObjects() const
 {
     std::vector<App::DocumentObject*> parameters;
-    parameters.reserve(3);
+    parameters.reserve(4);
     if (auto* gravity = getGravity()) {
         parameters.push_back(gravity);
     }
@@ -611,6 +611,11 @@ std::vector<App::DocumentObject*> MbDFEM::MbDAssembly::getParameterObjects() con
     }
     if (auto* animation = getAnimationParameters()) {
         parameters.push_back(animation);
+    }
+    if (auto* link = dynamic_cast<App::PropertyLink*>(getPropertyByName("videoSequence"))) {
+        if (auto* sequence = link->getValue()) {
+            parameters.push_back(sequence);
+        }
     }
     return parameters;
 }

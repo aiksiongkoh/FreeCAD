@@ -42,6 +42,7 @@ public:
     void ensureParameterObjects();
 
     void setupObject() override;
+    void unsetupObject() override;
     void onDocumentRestored() override;
 
     App::DocumentObjectExecReturn* execute() override;

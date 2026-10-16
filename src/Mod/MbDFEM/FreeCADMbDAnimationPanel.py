@@ -2,6 +2,8 @@
 
 """Task panel for MbDFEM animation playback controls."""
 
+from sys import float_info
+
 import FreeCAD as App
 import FreeCADGui as Gui
 
@@ -312,7 +314,11 @@ class AnimationTaskPanel:
             self._updating = False
         maximum = max(source_frame_count - 1, 0)
         self.frame_count_label.setText(f"/ {maximum}")
-        self.time_label.setText(f"{current_time:.6g} / {last_time:.6g} s")
+        # ASMT preserves the untimed Input configuration as -DBL_MAX.
+        self.time_label.setText(
+            "Input" if current_time == -float_info.max
+            else f"{current_time:.6g} / {last_time:.6g} s"
+        )
 
     def _toggle_playback(self, checked=False):
         if checked:

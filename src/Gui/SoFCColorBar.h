@@ -93,7 +93,7 @@ private:
     void customize();
 
     float getBounds(const SbVec2s& size, float& minimumX, float& minimumY, float& maximumX, float& maximumY);
-    float getBoundingWidth(const SbVec2s& size);
+    float getBoundingWidth(const SbVec2s& size, float barWidth, float minimumY, float maximumY);
     float snapToPixelGrid(float coordinate, const SbVec2s& size) const;
     float snapExtentToPixelGrid(float extent, const SbVec2s& size) const;
 

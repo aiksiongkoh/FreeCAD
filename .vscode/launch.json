@@ -2,6 +2,28 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "name": "Full Release Script",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/release/bin/FreeCAD.exe",
+            "args": ["${workspaceFolder}/data/examples/RealisticPendulum/startup.FCMacro"],
+            "cwd": "${workspaceFolder}/build/release/bin",
+            "stopAtEntry": false,
+            "environment": [{ "name": "PYTHONDONTWRITEBYTECODE", "value": "1" }],
+            "preLaunchTask": "MbDFEM: refresh Release scripts caches and C++",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "Release MbDFEM",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/release/bin/FreeCAD.exe",
+            "cwd": "${workspaceFolder}/build/release/bin",
+            "stopAtEntry": false,
+            "environment": [{ "name": "PYTHONDONTWRITEBYTECODE", "value": "1" }],
+            "console": "integratedTerminal"
+        },
+        {
             "name": "Debug MbDFEM",
             "type": "cppvsdbg",
             "request": "launch",

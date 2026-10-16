@@ -51,26 +51,26 @@ class StateOverlayTest(unittest.TestCase):
         self.populate()
         self.parameters.currentFrame = 24
         self.assertEqual(Overlay.state_text(self.assembly),
-                         "State 24 / 120 · t = 0.240 s")
+                         "State 24 / 119 · t = 0.240 s")
 
     def test_empty_and_incomplete_series(self):
         self.assertEqual(Overlay.state_text(self.assembly), "State — / — · t = — s")
         self.populate()
         self.part.zs = [0.0] * 10
         self.parameters.currentFrame = 24
-        self.assertEqual(Overlay.state_text(self.assembly), "State 9 / 10 · t = 0.090 s")
+        self.assertEqual(Overlay.state_text(self.assembly), "State 9 / 9 · t = 0.090 s")
 
     def test_asmt_input_configuration_has_no_timestamp(self):
         self.populate(3)
         self.assembly.times = [-float_info.max, 0.0, 0.01]
         self.assertEqual(Overlay.state_text(self.assembly),
-                         "State 0 / 3 · t = — s (Input)")
+                         "State 0 / 2 · t = — s (Input)")
         controller = FreeCADMbDAnimation.AnimationController(self.assembly)
         self.assertEqual(Overlay.state_text(self.assembly,
                                           (controller.current_frame, controller.current_time)),
-                         "State 0 / 3 · t = — s (Input)")
+                         "State 0 / 2 · t = — s (Input)")
         controller.setFrame(1)
-        self.assertEqual(Overlay.state_text(self.assembly), "State 1 / 3 · t = 0.000 s")
+        self.assertEqual(Overlay.state_text(self.assembly), "State 1 / 2 · t = 0.000 s")
         self.assertEqual(self.assembly.times[0], -float_info.max)
 
     def test_invalid_and_large_times_stay_compact(self):
@@ -79,7 +79,7 @@ class StateOverlayTest(unittest.TestCase):
                                (-float("inf"), "—"), (1e100, "1.000e+100")):
             with self.subTest(seconds=seconds):
                 self.assertEqual(Overlay.state_text(self.assembly, (0, seconds)),
-                                 f"State 0 / 1 · t = {label} s")
+                                 f"State 0 / 0 · t = {label} s")
 
     def test_interpolated_time_and_frame_are_kept_together(self):
         self.populate(3)
@@ -89,7 +89,7 @@ class StateOverlayTest(unittest.TestCase):
         self.assertEqual(self.parameters.currentFrame, controller.current_frame)
         self.assertEqual(Overlay.state_text(self.assembly,
                                           (controller.current_frame, controller.current_time)),
-                         f"State {controller.current_frame} / 3 · t = 0.015 s")
+                         f"State {controller.current_frame} / 2 · t = 0.015 s")
 
     def test_live_state_without_saved_animation_parameters(self):
         self.populate()
@@ -99,7 +99,7 @@ class StateOverlayTest(unittest.TestCase):
         controller.setFrame(24)
         self.assertEqual(Overlay.state_text(self.assembly,
                                           (controller.current_frame, controller.current_time)),
-                         "State 24 / 120 · t = 0.240 s")
+                         "State 24 / 119 · t = 0.240 s")
 
     @unittest.skipUnless(App.GuiUp, "Requires the FreeCAD GUI")
     def test_overlay_adapts_to_background_changes_without_a_frame_change(self):
@@ -140,12 +140,12 @@ class StateOverlayTest(unittest.TestCase):
         controller.setFrame(24)
         view = Gui.activeDocument().activeView()
         overlay = Overlay._manager.overlays[self.document.Name][view]
-        self.assertEqual(overlay._text, "State 24 / 120 · t = 0.240 s")
+        self.assertEqual(overlay._text, "State 24 / 119 · t = 0.240 s")
         view.viewTop()
         view.fitAll()
-        self.assertEqual(overlay._text, "State 24 / 120 · t = 0.240 s")
+        self.assertEqual(overlay._text, "State 24 / 119 · t = 0.240 s")
         controller.setFrame(25)
-        self.assertEqual(overlay._text, "State 25 / 120 · t = 0.250 s")
+        self.assertEqual(overlay._text, "State 25 / 119 · t = 0.250 s")
         Overlay.install()
         self.assertEqual(len(Overlay._manager.overlays[self.document.Name]), 1)
         name = self.document.Name
